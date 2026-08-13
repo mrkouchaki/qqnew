@@ -1,6 +1,8 @@
 -- Dataset 2: PSAP jurisdiction polygons.
 -- PROPERTIES can exceed the SQL*Plus line limit, so it is exported in ordered
--- 30,000-character chunks. The notebook reassembles each boundary exactly.
+-- 4,000-character chunks. This stays within Oracle SQL VARCHAR2 limits and
+-- avoids ORA-06502 when the CLOB contains multibyte characters. The notebook
+-- reassembles each boundary exactly by CHUNK_NO.
 -- Direct run:
 --   sqlplus YOUR_USER@YOUR_TNS_ALIAS @02_export_psap_boundaries.sql ^
 --     "C:\temp\psap_route_integrity_v1"
@@ -27,14 +29,14 @@ with boundaries as (
         x.chunk_no,
         dbms_lob.substr(
             b.properties_clob,
-            30000,
-            ((x.chunk_no - 1) * 30000) + 1
+            4000,
+            ((x.chunk_no - 1) * 4000) + 1
         ) as properties_chunk
     from boundaries b
     cross apply (
         select level as chunk_no
         from dual
-        connect by level <= ceil(dbms_lob.getlength(b.properties_clob) / 30000)
+        connect by level <= ceil(dbms_lob.getlength(b.properties_clob) / 4000)
     ) x
 )
 select nena_id, fcc_psap_id, chunk_no, properties_chunk
@@ -43,4 +45,3 @@ order by fcc_psap_id, nena_id, chunk_no;
 spool off
 set markup csv off
 prompt Wrote &&ROOT_DIR\data\psap_boundaries_chunks.csv
-
