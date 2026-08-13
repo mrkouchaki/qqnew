@@ -1,0 +1,56 @@
+# PSAP Route Integrity: Label and Feature Analysis
+
+This bundle performs two stages:
+
+1. It creates conservative correct/wrong\-PSAP labels by comparing each reported location uncertainty area with the actual routed `FCC_PSAP_ID` and `E911_PSAP_BOUNDARIES`\.
+2. It tests relationships between definite misroutes and PSAPSIM, GMLC, LSR/CSR, MME, signaling, location, ESRK, ECGI/eNodeB, and KPI candidates before a final ML design is selected\.
+
+## 1\. Put the bundle in the requested folder
+
+In PowerShell, expand the ZIP directly under `C:\temp`; the ZIP creates the
+`psap_route_integrity_v1` folder itself:
+
+```powershell
+New-Item -ItemType Directory -Force C:\temp | Out-Null
+Expand-Archive .\psap_route_integrity_v1.zip C:\temp -Force
+cd C:\temp\psap_route_integrity_v1
+```
+
+## 2\. Export Oracle data
+
+Edit only `START_UTC` and `END_UTC` near the top of `sql\00_run_all_exports.sql`\. Then run:
+
+```powershell
+cd C:\temp\psap_route_integrity_v1\sql
+sqlplus YOUR_ORACLE_USER@YOUR_TNS_ALIAS @00_run_all_exports.sql
+```
+
+Enter the password only in the SQL\*Plus password prompt\. Do not put it in these files\.
+
+SQL Developer alternative: open `00_run_all_exports.sql` and use **Run Script \(F5\)**, not Run Statement\.
+
+The runner creates `data` and `outputs`, then exports:
+
+- `psapsim_calls.csv`: coordinates, uncertainty, routed PSAP, ECGI/eNodeB/ESRK, and PSAPSIM results\.
+- `psap_boundaries_chunks.csv`: complete boundary JSON in safe ordered chunks\.
+- `gmlc_psapsim_features.csv`: available non\-PII GMLC/signaling features from the already correlated table\.
+- `lsr_csr_features.csv`: available LSR/CSR, MME, routing, and KPI fields\.
+- `selected_table_columns.csv`: exact columns in only the four chosen project tables for targeted follow\-up\.
+
+## 3\. Run the notebook
+
+```powershell
+cd C:\temp\psap_route_integrity_v1
+python -m pip install -r requirements.txt
+jupyter lab psap_misroute_feature_analysis.ipynb
+```
+
+Use **Run All**\. Main outputs are written to `outputs`, including strong labels, join coverage, feature associations, repeated entity patterns, screening results, plots, and targeted next columns\.
+
+## Label policy
+
+- `DEFINITE_MISROUTE = 1`: the uncertainty area does not touch the routed PSAP and exactly one different PSAP fully contains it\.
+- `CORRECT_UNAMBIGUOUS = 0`: exactly the routed PSAP fully contains the uncertainty area\.
+- Boundary\-edge, overlapping\-boundary, invalid\-coordinate, and missing\-boundary cases are excluded from strong labels\.
+
+The boundary check creates ground truth; it is not itself the ML model\. The optional chronological model is only a feature\-sufficiency screen\.
