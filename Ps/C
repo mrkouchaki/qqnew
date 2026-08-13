@@ -1,0 +1,416 @@
+
+
+You are correct. The current version mainly uses E911_LTE_GMLC_PSAPSIM_CALLS and E911_LTE_LSR_CSR_CD; it does not properly extract and analyze:
+
+* WEST911.E911_LTE_MASTER_GMLC
+* IMS911.E911_LTE_MASTER_IMS
+* IMS911.RAW_CCDR
+
+That prevents complete GMLC-to-IMS signaling and consequence analysis.
+
+Prompt 1 — SQL extraction package
+
+You are a senior Oracle 19c and SQL*Plus engineer. I will provide my current SQL files, schema screenshots, and any column inventories available. Rebuild and correct the SQL extraction package for an E911 Wrong-PSAP Routing Integrity project.
+
+Do not merely explain the solution. Return complete runnable .sql files.
+
+Main objective
+
+We need historical call data to perform two later Python stages:
+
+1. Create strong wrong-PSAP labels by comparing the call’s resolved latitude/longitude and uncertainty area against authoritative PSAP jurisdiction boundaries.
+2. Investigate whether confirmed wrong-PSAP routes are related to GMLC, location, ESRK, ECGI/eNodeB, MME, IMS/SIP, CCDR, routing, or operational KPI features.
+
+The SQL package extracts data. Python will perform geometry labeling, statistical association analysis, and ML-readiness evaluation.
+
+Required Oracle sources
+
+Use all relevant sources below. Do not replace the three master signaling sources with the pre-correlated PSAPSIM table.
+
+1. E911.E911_PSAPSIM_CALL_DETAILS_LTE
+    * Primary call/location/actual-routed-PSAP source.
+    * Expected fields include call time, latitude, longitude, uncertainty, FCC_PSAP_ID, PSAP name/ID, TEST_CALL, ECGI, eNodeB, USID, ESRK, validation and completion fields.
+2. E911.E911_PSAP_BOUNDARIES
+    * Authoritative PSAP jurisdiction polygons.
+    * Export FCC_PSAP_ID, NENA_ID, and the complete geometry/GeoJSON without truncation.
+3. E911.E911_LTE_GMLC_PSAPSIM_CALLS
+    * Already-correlated PSAPSIM/GMLC bridge.
+    * Use it to obtain or validate technical call identifiers for joining PSAPSIM labels to the master sources.
+    * Do not treat it as a replacement for WEST911.E911_LTE_MASTER_GMLC.
+4. WEST911.E911_LTE_MASTER_GMLC
+    * Core master GMLC/location source.
+    * Extract available call IDs, timestamps, ECGIs, ESRK, positioning method, location success/failure, locate time, uncertainty, result codes, GMLC/Diameter host or connection, route status, default-routing status, MME context, and other relevant fields.
+5. E911.E911_LTE_LSR_CSR_CD
+    * LSR/CSR, MME, validation, routing and relay/KPI information.
+6. IMS911.E911_LTE_MASTER_IMS
+    * Call-level IMS and SIP information, node/path information, response outcomes, Q.850 outcomes, routing and final-leg evidence when available.
+7. IMS911.RAW_CCDR
+    * Detailed signaling transactions for the same calls.
+    * This table may contain several rows per call. Export only rows connected through a validated call identifier or a separately validated correlation method.
+    * Never export an unrestricted month of RAW_CCDR.
+8. WEST911.E911_INTRADO_LTECELL_MV
+    * Optional ECGI/cell-to-PSAP routing reference for RCA and comparison.
+    * This is supporting configuration evidence, not the ground-truth misroute label.
+
+Mandatory schema rule
+
+Do not invent columns or join keys.
+
+First inspect ALL_TAB_COLUMNS for every required table. Use only columns that really exist in the provided schema. If a desired column is absent, document it in the output and continue without it.
+
+Candidate correlation identifiers may include:
+
+* HDR_TRID
+* CTID
+* SIP_CTID
+* UNIQ911_CID
+* MLI_CALL_ID
+* PLRF_CID
+* other actual shared identifiers discovered in the schema
+
+Profile every candidate key for:
+
+* non-null count and rate;
+* distinct count;
+* duplicate count;
+* maximum rows per key;
+* overlap between tables;
+* one-to-one, one-to-many or many-to-many behavior.
+
+Use exact call identifiers first. Do not silently join calls using only time, ECGI or ESRK.
+
+If no exact identifier exists, create a separate correlation-quality test using UTC time, normalized ECGI and ESRK. It must use reciprocal unique matching and report time-difference distribution, match coverage and ambiguity. Mark this as APPROXIMATE; do not present it as a confirmed call-level join.
+
+Required files
+
+00_run_all_exports.sql
+
+Master SQL*Plus runner.
+
+It must:
+
+* define ROOT_DIR = C:\temp\psap_route_integrity_v2;
+* define START_UTC and exclusive END_UTC;
+* create data, audit and logs directories;
+* call child scripts using a single @, never @@;
+* include WHENEVER SQLERROR EXIT SQL.SQLCODE;
+* include WHENEVER OSERROR EXIT FAILURE;
+* stop immediately if any child script fails;
+* never print a false “finished” message after an error;
+* support resuming from a selected export step;
+* contain the exact PowerShell/SQL*Plus running command in comments.
+
+01_export_schema_inventory.sql
+
+Spool:
+
+C:\temp\psap_route_integrity_v2\audit\source_column_inventory.csv
+
+Include owner, table, column order, column name, datatype, length, precision, scale and nullable status for all eight sources.
+
+Also produce a small source summary with accessible/not-accessible status and date-field candidates.
+
+02_export_join_key_profile.sql
+
+Spool:
+
+audit\join_key_profile.csv
+
+Profile possible identifiers across PSAPSIM, the correlated GMLC bridge, master GMLC, LSR/CSR, master IMS and RAW_CCDR.
+
+Report null rate, uniqueness, multiplicity and overlap. The output must make it clear which joins are safe and which are unsafe.
+
+03_export_psapsim_label_calls.sql
+
+Spool:
+
+data\psapsim_label_calls.csv
+
+One row per PSAPSIM call. Include only actual available fields needed for:
+
+* call timestamp;
+* latitude/longitude;
+* uncertainty and confidence;
+* actual routed FCC_PSAP_ID;
+* PSAP ID/name;
+* ECGI/eNodeB/USID;
+* ESRK/GMLC ESRK;
+* test-call status;
+* completion/validation result;
+* exact technical correlation identifiers.
+
+Apply the UTC date filter. Exclude subscriber PII such as MSISDN, IMSI, ANI and full SIP identities.
+
+04_export_psap_boundaries.sql
+
+Spool:
+
+data\psap_boundaries_chunks.csv
+
+Export complete PSAP geometry/GeoJSON plus:
+
+* FCC_PSAP_ID;
+* NENA_ID;
+* CHUNK_NO;
+* TOTAL_CHUNKS;
+* PROPERTIES_CHUNK or GEOJSON_CHUNK.
+
+Important: never request 30,000 CLOB characters. It caused ORA-06502.
+
+Use a maximum of 4,000 characters per DBMS_LOB.SUBSTR chunk, with matching 4,000-character offsets. Preserve chunk order so Python can reconstruct the full geometry.
+
+If the source is SDO_GEOMETRY, convert it correctly to GeoJSON first and then chunk the resulting CLOB.
+
+05_export_psapsim_gmlc_bridge.sql
+
+Spool:
+
+data\psapsim_gmlc_bridge.csv
+
+Extract the already-correlated records from E911.E911_LTE_GMLC_PSAPSIM_CALLS.
+
+Its purpose is to connect PSAPSIM calls to master-source identifiers. Include actual shared call IDs, timestamps, ECGI, ESRK and PSAP identifiers. Do not include unnecessary duplicate metrics.
+
+06_export_master_gmlc_features.sql
+
+Spool:
+
+data\master_gmlc_features.csv
+
+Use WEST911.E911_LTE_MASTER_GMLC, not only the PSAPSIM-correlated table.
+
+Include actual available fields for:
+
+* exact correlation IDs;
+* UTC timestamps;
+* setup/invite/locate ECGI;
+* ESRK/GMLC ESRK;
+* positioning method;
+* P2 locate/success/failure;
+* locate duration;
+* uncertainty/confidence;
+* result and status codes;
+* default-route indicator;
+* route status;
+* GMLC/Diameter host and connection;
+* MME context;
+* routed PSAP information;
+* relevant location/signaling outcome fields.
+
+Prefer a validated semi-join to the PSAPSIM/GMLC bridge so only relevant calls are exported. If a safe join is not yet available, apply the strict UTC date filter and export only selected columns.
+
+Do not globally ORDER BY millions of rows.
+
+07_export_lsr_csr_features.sql
+
+Spool:
+
+data\lsr_csr_features.csv
+
+Use E911.E911_LTE_LSR_CSR_CD.
+
+Include available correlation IDs, timestamps, ECGI, ESRK, routed PSAP, MME name/pool/vendor, positioning result, failure indicators, E2 validation, relay-to-PSAP status and meaningful count/KPI fields.
+
+Preserve the row grain and document whether it is one call, one location request or an aggregate.
+
+08_export_master_ims_features.sql
+
+Spool:
+
+data\master_ims_features.csv
+
+Use IMS911.E911_LTE_MASTER_IMS.
+
+Include available:
+
+* validated call identifiers;
+* UTC timestamps;
+* ESRK and PSAP routing fields;
+* SIP request/final response;
+* Q.850 result;
+* E-CSCF/S-CSCF or other IMS node fields;
+* originating node and destination host;
+* final downstream/PSAP-leg evidence;
+* call completion and duration;
+* correlation failure indicators.
+
+Do not include subscriber PII.
+
+09_export_raw_ccdr_features.sql
+
+Spool:
+
+data\raw_ccdr_features.csv
+
+Use IMS911.RAW_CCDR.
+
+Because this is a large event table:
+
+* export only records matching validated call identifiers from the bridge/master IMS dataset;
+* preserve the event timestamp and event order;
+* include SIP method, direction, response/status, Q.850 cause, node/host, retransmission or transaction information when available;
+* exclude raw message bodies, PIDF XML, PANI, MSISDN, IMSI, ANI and other PII;
+* document whether one call has multiple CCDR rows.
+
+If no validated key connects RAW_CCDR to labeled calls, do not create a false join. Produce a join-gap report instead.
+
+10_export_cell_psap_reference.sql
+
+Spool:
+
+data\cell_psap_reference.csv
+
+Use WEST911.E911_INTRADO_LTECELL_MV if accessible.
+
+Extract ECGI/cell/eNodeB and expected PSAP/routing reference fields. Treat this only as RCA/configuration context, not as the misroute ground truth.
+
+11_export_source_quality.sql
+
+Spool:
+
+audit\source_quality.csv
+
+For every export, report:
+
+* source rows in date range;
+* exported rows;
+* minimum/maximum timestamp;
+* distinct call IDs;
+* duplicate key count;
+* relevant missing-field rates;
+* row grain;
+* whether the source was safely joinable.
+
+SQL*Plus requirements
+
+* Oracle Database 19c compatible.
+* Windows SQL*Plus compatible.
+* Use a source/output path without spaces.
+* CSV output with headers and quoted values.
+* Use SET TERMOUT OFF during large queries to prevent millions of rows from printing in the terminal.
+* Use SET TRIMSPOOL ON, suitable LINESIZE, and explicit timestamp formats.
+* Turn TERMOUT back on after each spool.
+* Do not use unnecessary PL/SQL/ref-cursor dynamic exports when a static SELECT is possible.
+* Do not use global sorts on large call tables.
+* Use strict date predicates on native timestamp/date columns.
+* Do not suppress Oracle errors.
+* Each file must contain its exact standalone SQL*Plus running command in comments.
+
+Final response required
+
+Return:
+
+1. A short table listing every .sql file, its source, row grain, CSV output and purpose.
+2. Full runnable content for every .sql file.
+3. Exact execution commands.
+4. Any column or join assumptions that still require verification.
+5. No fabricated columns, no fake joins and no placeholder code presented as completed code.
+
+Prompt 2 — corrected notebook
+
+You are a senior Python geospatial data scientist with E911, GMLC and IMS/SIP experience. I will provide the extracted CSV files, current notebook and current Python helper. Rebuild the analysis as:
+
+psap_misroute_feature_analysis_v2.ipynb
+
+The notebook must be executable from top to bottom and must actually use the master GMLC, master IMS and RAW_CCDR datasets when their join quality is valid.
+
+Do not return only recommendations. Return the complete updated notebook and any required Python helper file.
+
+Main analytical question
+
+First determine:
+
+“Which calls were definitely routed to the wrong PSAP according to the caller’s resolved geographic location and uncertainty area?”
+
+Then determine:
+
+“Which location, routing, ECGI/eNodeB, ESRK, GMLC, MME, IMS/SIP, CCDR or KPI features have a statistically meaningful and operationally repeatable relationship with confirmed wrong-PSAP routing?”
+
+The boundary comparison creates the ground-truth label. It is not itself the ML model.
+
+Required inputs
+
+Load these when available:
+
+* psapsim_label_calls.csv
+* psap_boundaries_chunks.csv
+* psapsim_gmlc_bridge.csv
+* master_gmlc_features.csv
+* lsr_csr_features.csv
+* master_ims_features.csv
+* raw_ccdr_features.csv
+* cell_psap_reference.csv
+* join_key_profile.csv
+* source_quality.csv
+
+Do not use gmlc_psapsim_features.csv as a replacement for master_gmlc_features.csv.
+
+Part 1: data and join validation
+
+The first cells must:
+
+* define DATA_DIR = C:\temp\psap_route_integrity_v2\data;
+* define OUTPUT_DIR = C:\temp\psap_route_integrity_v2\outputs;
+* test that required files can be opened;
+* display rows, columns, memory use, timestamp coverage and missingness;
+* identify the row grain of every dataset;
+* load large files efficiently with selected datatypes/chunking where needed.
+
+Create join_quality_by_source.csv containing:
+
+* join key used;
+* exact versus approximate method;
+* left/right row counts;
+* match coverage;
+* unmatched calls;
+* duplicated keys;
+* one-to-one, one-to-many or many-to-many behavior;
+* ambiguous matches;
+* time-difference statistics when time correlation is tested.
+
+Join priority:
+
+1. Exact validated call identifier.
+2. Exact bridge through E911_LTE_GMLC_PSAPSIM_CALLS.
+3. Only for diagnostics, reciprocal unique matching using normalized ECGI, ESRK and UTC time.
+
+Never silently use a nearest-time match as an exact call-level join. Reject unsafe many-to-many joins.
+
+Aggregate IMS or CCDR event rows to one call-level feature row before attaching them to labels, while retaining a separate event-level drill-down output.
+
+Part 2: reconstruct PSAP boundaries
+
+Reassemble boundary chunks by:
+
+* FCC_PSAP_ID;
+* NENA_ID;
+* ordered CHUNK_NO.
+
+Support GeoJSON stored as:
+
+* a Feature;
+* a FeatureCollection;
+* a Polygon/MultiPolygon geometry;
+* nested geometry inside another JSON object.
+
+Validate and repair geometry only with documented safe operations. Report invalid or missing boundaries.
+
+Use WGS84 coordinates and create the uncertainty area in an appropriate local projected CRS or with a correct geodesic method. Do not buffer longitude/latitude directly in degrees.
+
+Part 3: conservative boundary labels
+
+For each call, construct its reported uncertainty area from latitude, longitude and UNCERT_METERS.
+
+Create these statuses:
+
+* DEFINITE_CORRECT: the uncertainty area is fully covered by the routed PSAP jurisdiction.
+* DEFINITE_MISROUTE: the uncertainty area is fully covered by exactly one different PSAP and is disjoint from the routed PSAP.
+* BOUNDARY_AMBIGUOUS: the uncertainty area overlaps multiple jurisdictions or overlaps both routed and alternative PSAPs.
+* POINT_MISMATCH_LOW_CONFIDENCE: the center point lies in another PSAP, but uncertainty prevents a definite decision.
+* NO_CONTAINING_PSAP
+* MISSING_ROUTED_BOUNDARY
+* INVALID_LOCATION
+* INVALID_UNCERTAINTY
+* MISSING_LOCATION
+
+Use only
