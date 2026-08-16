@@ -1,1 +1,111 @@
 b
+
+
+
+
+
+WITH calls AS (
+    SELECT /*+ MATERIALIZE */
+        REGEXP_REPLACE(
+            TRIM(CAST(FCC_PSAP_ID AS VARCHAR2(100))),
+            '[.]0$',
+            ''
+        ) AS CALL_FCC_ID,
+
+        REGEXP_REPLACE(
+            TRIM(CAST(PSAP_ID AS VARCHAR2(100))),
+            '[.]0$',
+            ''
+        ) AS CALL_PSAP_ID
+    FROM E911.E911_PSAPSIM_CALL_DETAILS_LTE
+    WHERE ROWNUM <= 10000
+),
+
+legacy_fcc AS (
+    SELECT DISTINCT
+        REGEXP_REPLACE(
+            TRIM(CAST(FCC_PSAP_ID AS VARCHAR2(100))),
+            '[.]0$',
+            ''
+        ) AS BOUNDARY_ID
+    FROM E911.E911_PSAP_BOUNDARIES
+    WHERE FCC_PSAP_ID IS NOT NULL
+),
+
+legacy_nena AS (
+    SELECT DISTINCT
+        REGEXP_REPLACE(
+            TRIM(CAST(NENA_ID AS VARCHAR2(100))),
+            '[.]0$',
+            ''
+        ) AS BOUNDARY_ID
+    FROM E911.E911_PSAP_BOUNDARIES
+    WHERE NENA_ID IS NOT NULL
+),
+
+fcc_boundaries AS (
+    SELECT DISTINCT
+        REGEXP_REPLACE(
+            TRIM(CAST(FCC_PSAP_ID AS VARCHAR2(100))),
+            '[.]0$',
+            ''
+        ) AS BOUNDARY_ID
+    FROM E911.E911_PSAP_BOUNDARIES_FCC
+    WHERE FCC_PSAP_ID IS NOT NULL
+)
+
+SELECT
+    'CALL FCC_PSAP_ID -> PSAP_BOUNDARIES FCC_PSAP_ID' AS COMPARISON,
+    COUNT(c.CALL_FCC_ID) AS NONNULL_CALL_ROWS,
+    SUM(CASE WHEN b.BOUNDARY_ID IS NOT NULL THEN 1 ELSE 0 END) AS MATCHED_ROWS,
+    ROUND(
+        100 * SUM(CASE WHEN b.BOUNDARY_ID IS NOT NULL THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(c.CALL_FCC_ID), 0),
+        2
+    ) AS MATCH_RATE_PCT
+FROM calls c
+LEFT JOIN legacy_fcc b
+    ON b.BOUNDARY_ID = c.CALL_FCC_ID
+
+UNION ALL
+
+SELECT
+    'CALL PSAP_ID -> PSAP_BOUNDARIES NENA_ID',
+    COUNT(c.CALL_PSAP_ID),
+    SUM(CASE WHEN b.BOUNDARY_ID IS NOT NULL THEN 1 ELSE 0 END),
+    ROUND(
+        100 * SUM(CASE WHEN b.BOUNDARY_ID IS NOT NULL THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(c.CALL_PSAP_ID), 0),
+        2
+    )
+FROM calls c
+LEFT JOIN legacy_nena b
+    ON b.BOUNDARY_ID = c.CALL_PSAP_ID
+
+UNION ALL
+
+SELECT
+    'CALL FCC_PSAP_ID -> PSAP_BOUNDARIES_FCC FCC_PSAP_ID',
+    COUNT(c.CALL_FCC_ID),
+    SUM(CASE WHEN b.BOUNDARY_ID IS NOT NULL THEN 1 ELSE 0 END),
+    ROUND(
+        100 * SUM(CASE WHEN b.BOUNDARY_ID IS NOT NULL THEN 1 ELSE 0 END)
+        / NULLIF(COUNT(c.CALL_FCC_ID), 0),
+        2
+    )
+FROM calls c
+LEFT JOIN fcc_boundaries b
+    ON b.BOUNDARY_ID = c.CALL_FCC_ID;
+
+
+
+
+
+
+
+
+
+
+
+
+
