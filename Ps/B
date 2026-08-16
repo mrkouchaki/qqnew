@@ -2,6 +2,43 @@ b
 
 
 
+def _normalize_psap_id(series: pd.Series) -> pd.Series:
+    return (
+        series.astype("string")
+        .str.strip()
+        .str.replace(r"\.0+$", "", regex=True)
+        .replace({
+            "": pd.NA,
+            "nan": pd.NA,
+            "None": pd.NA,
+            "<NA>": pd.NA
+        })
+    )
+
+
+
+
+c["FCC_PSAP_ID"] = _normalize_psap_id(c["FCC_PSAP_ID"])
+b["FCC_PSAP_ID"] = _normalize_psap_id(b["FCC_PSAP_ID"])
+
+if "NENA_ID" in b.columns:
+    b["NENA_ID"] = _normalize_psap_id(b["NENA_ID"])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 WITH calls AS (
