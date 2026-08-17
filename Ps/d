@@ -2,6 +2,12 @@
 
 
 
+
+
+
+
+
+
 # ============================================================
 # 10. Automated Misroute Root-Cause Analysis
 # ============================================================
@@ -732,6 +738,219 @@ priority_mapping.to_csv(
 
 print("\nTop PSAP routing pairs:")
 display(pair_summary.head(30))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+hhhhhhhgggggghhhhhh
+
+
+
+# ============================================================
+# Validate row grain and create one record per emergency call
+# ============================================================
+
+import numpy as np
+import pandas as pd
+from pathlib import Path
+
+raw = result["labeled_calls"].copy()
+
+if "PLRF_CID" not in raw.columns:
+    raise ValueError("PLRF_CID is unavailable; a different call key is required.")
+
+
+def clean_key(series):
+    output = (
+        series.astype("string")
+        .str.strip()
+        .str.replace(r"\.0+$", "", regex=True)
+        .str.upper()
+    )
+
+    return output.mask(
+        output.isin(["", "NAN", "NONE", "NULL", "<NA>"])
+    )
+
+
+# Primary call identifier
+raw["_CALL_KEY"] = clean_key(raw["PLRF_CID"])
+
+# Fallback only when PLRF_CID is missing
+fallback_columns = [
+    c for c in [
+        "CALL_BEGIN_TIME_UTC",
+        "SETUP_ECGI_HEX",
+        "USID",
+        "ENBID",
+        "ESRK",
+        "LATITUDE",
+        "LONGITUDE",
+    ]
+    if c in raw.columns
+]
+
+fallback_key = (
+    raw[fallback_columns]
+    .astype("string")
+    .fillna("")
+    .agg("|".join, axis=1)
+)
+
+missing_key = raw["_CALL_KEY"].isna()
+raw.loc[missing_key, "_CALL_KEY"] = (
+    "FALLBACK|" + fallback_key[missing_key]
+)
+
+
+# Normalized fields for conflict checking
+for column in [
+    "ROUTE_INTEGRITY_STATUS",
+    "FCC_PSAP_ID",
+    "EXPECTED_FCC_PSAP_ID",
+]:
+    raw[f"_AUDIT_{column}"] = clean_key(raw[column])
+
+
+def nonmissing_nunique(series):
+    return series.dropna().nunique()
+
+
+grain_audit = (
+    raw.groupby("_CALL_KEY")
+    .agg(
+        SOURCE_ROWS=("PLRF_CID", "size"),
+        STATUS_COUNT=(
+            "_AUDIT_ROUTE_INTEGRITY_STATUS",
+            nonmissing_nunique,
+        ),
+        ROUTED_PSAP_COUNT=(
+            "_AUDIT_FCC_PSAP_ID",
+            nonmissing_nunique,
+        ),
+        EXPECTED_PSAP_COUNT=(
+            "_AUDIT_EXPECTED_FCC_PSAP_ID",
+            nonmissing_nunique,
+        ),
+    )
+)
+
+grain_audit["LABEL_CONFLICT"] = (
+    (grain_audit["STATUS_COUNT"] > 1)
+    | (grain_audit["ROUTED_PSAP_COUNT"] > 1)
+    | (grain_audit["EXPECTED_PSAP_COUNT"] > 1)
+)
+
+conflict_keys = grain_audit.index[
+    grain_audit["LABEL_CONFLICT"]
+]
+
+# Select the most complete representative row
+entity_columns = [
+    c for c in [
+        "SETUP_ECGI_HEX",
+        "ENBID",
+        "USID",
+        "ESRK",
+        "LATITUDE",
+        "LONGITUDE",
+    ]
+    if c in raw.columns
+]
+
+raw["_COMPLETENESS"] = (
+    raw[entity_columns]
+    .astype("string")
+    .replace(
+        r"^\s*(?:<NA>|NAN|NONE|NULL)?\s*$",
+        pd.NA,
+        regex=True,
+    )
+    .notna()
+    .sum(axis=1)
+)
+
+safe_rows = raw[
+    ~raw["_CALL_KEY"].isin(conflict_keys)
+].copy()
+
+call_level = (
+    safe_rows.sort_values(
+        ["_CALL_KEY", "_COMPLETENESS"],
+        ascending=[True, False],
+    )
+    .drop_duplicates("_CALL_KEY", keep="first")
+)
+
+call_level["SOURCE_ROWS_PER_CALL"] = (
+    call_level["_CALL_KEY"].map(
+        grain_audit["SOURCE_ROWS"]
+    )
+)
+
+helper_columns = [
+    c for c in call_level.columns
+    if c.startswith("_AUDIT_")
+]
+
+calls_for_rca = call_level.drop(
+    columns=helper_columns + ["_COMPLETENESS"],
+    errors="ignore",
+).copy()
+
+
+# Call-level results
+strong_call_level = calls_for_rca[
+    calls_for_rca["ROUTE_INTEGRITY_STATUS"].isin([
+        "DEFINITE_CORRECT",
+        "DEFINITE_MISROUTE",
+    ])
+]
+
+unique_misroutes = (
+    strong_call_level["ROUTE_INTEGRITY_STATUS"]
+    == "DEFINITE_MISROUTE"
+).sum()
+
+print("Original rows:", f"{len(raw):,}")
+print("Unique call keys:", f"{raw['_CALL_KEY'].nunique():,}")
+print(
+    "Rows removed as duplicates:",
+    f"{len(raw) - len(calls_for_rca):,}",
+)
+print("Conflicting call keys excluded:", f"{len(conflict_keys):,}")
+print("Strong unique calls:", f"{len(strong_call_level):,}")
+print("Unique definite misroutes:", f"{unique_misroutes:,}")
+print(
+    "Unique-call misroute rate:",
+    f"{100 * unique_misroutes / len(strong_call_level):.2f}%",
+)
+
+RCA_DIR = Path(OUTPUT_DIR) / "misroute_rca"
+RCA_DIR.mkdir(parents=True, exist_ok=True)
+
+grain_audit.reset_index().to_csv(
+    RCA_DIR / "00_call_grain_audit.csv",
+    index=False,
+)
+
+calls_for_rca.to_csv(
+    RCA_DIR / "00_unique_call_labels.csv",
+    index=False,
+)
 
 
 
