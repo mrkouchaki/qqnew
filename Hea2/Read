@@ -1,0 +1,181 @@
+PSAP KPI anomaly-detection code
+
+Evaluation bundle release: 1.1.0
+
+This package contains monthly PSAP KPI model training, hourly anomaly inference,
+alert orchestration, and their shared data and storage utilities.
+
+Hierarchy
+
+```text
+psap_kpi_evaluation_v1_1/
+├── README.md
+└── src/
+    └── psap_kpi/
+        ├── P21_psap_monthly_training.py   # Monthly data resolution, clustering, and AE training
+        ├── psap_kpi_inference.py          # Hourly autoencoder anomaly scoring and outage output
+        ├── psap_kpi_pipeline.py           # Inference and email orchestration entry point
+        ├── psap_kpi_email_serv.py         # Email alert creation and delivery
+        └── psap_utils/
+            ├── __init__.py
+            ├── azure_blob.py              # Azure Blob upload/download helpers
+            ├── queries.py                 # Shared Oracle KPI SQL builders
+            ├── query_runner.py            # Reusable Oracle query helpers
+            ├── training_data.py           # Training-window data shaping and loading
+            ├── cluster_twophase.py        # Two-phase cluster construction and refinement
+            ├── clustering.py             # Clustering compatibility helpers
+            ├── data_loader.py            # Monthly KPI data loading
+            ├── features.py               # Hourly temporal feature construction
+            ├── io_helpers.py             # Parsing, normalization, and output formatting
+            ├── kpi_cache_sqlite_gen.py   # SQLite KPI cache generator
+            ├── kpi_cache_sqlite.py       # SQLite cache compatibility layer
+            ├── mlflow_data_store.py      # MLflow data and artifact publishing
+            ├── mlflow_inference.py       # MLflow inference artifact resolution and caching
+            ├── model_training.py         # Per-cluster autoencoder training
+            ├── oracle_conn.py            # Oracle connection and query helpers
+            ├── outage_store.py           # Oracle and SQLite inference-result persistence
+            ├── test_npr_e2e.py           # NPR end-to-end scenario runner
+            ├── time_utils.py             # Evaluation-window utilities
+            └── timezone.py               # UTC-to-local timezone conversion
+```
+
+The main flow is monthly training and clustering, artifact storage, hourly inference, and optional email alerting.
+
+Unsupervised model evaluation
+
+The evaluation package adds a read-only evaluation loop around the existing
+deployed model. It does not retrain, recalibrate, update thresholds, write to the
+outage table, or claim production accuracy without real incident labels.
+
+```text
+src/psap_kpi/evaluation/
+├── evaluation_collector.py   # Chronological collection, replay, campaign, evidence files
+├── production_scorer.py      # Pinned-artifact scoring with full denominator/per-head evidence
+├── synthetic_faults.py       # Deterministic KPI injections and separate ground truth
+├── model_health_check.py     # Pure PASS/WARN/FAIL/UNKNOWN checks and metrics
+└── tests/                    # Focused offline tests
+```
+
+Method
+
+1. Select an untouched chronological window strictly after the model’s training
+and calibration cutoff.
+2. Score every observed PSAP-hour with a pinned local copy of the deployed
+artifact package and frozen thresholds.
+3. Independently inject controlled scenarios into copies of representative
+low-, medium-, and high-volume PSAP histories.
+4. Score the exact untouched counterpart and injected version of every event
+hour, retaining every candidate detector head.
+5. Generate health evidence and synthetic-only precision/recall metrics.
+
+The default campaign covers 396 independently isolated scenarios:
+
+• Call-volume spikes and drops.
+• Individual LSR, ASR, BID, and CSR degradation.
+• Multi-KPI degradation.
+• Mild, moderate, and severe changes.
+• 1-, 2-, 3-, and 6-hour durations.
+• Low-, medium-, and high-volume PSAPs.
+• Slow-burn degradation, intermittent/flapping degradation, and correlated
+call-volume plus multi-KPI failure.
+• Benign success-rate improvements that should not increase a directional score.
+
+CALL_VOLUME drops are intentionally retained as a challenge. The deployed
+directional scorer treats positive volume residuals as bad and ignores negative
+volume residuals, so the report exposes this blind spot separately.
+
+Select exactly the scenarios to run
+
+Without --scenario, the collector runs the full 396-scenario grid above. To
+run exactly one test, add one self-contained --scenario option:
+
+```powershell
+python -m psap_kpi.evaluation.evaluation_collector `
+  --input-csv C:\temp\psap_eval\untouched_hourly_kpis.csv `
+  --run-dir C:\temp\psap-kpi\models\ae_cluster_runs\PINNED_RUN_ID `
+  --training-cutoff-utc "2026-06-30 23:59:59Z" `
+  --output-dir C:\temp\psap_eval\results `
+  --scenario "pattern=kpi_degradation,kpis=ASR_SR,severity=severe,duration=3,volume=high"
+```
+
+That command runs exactly one severe, three-hour ASR degradation on a
+high-volume PSAP. To run exactly two tests, repeat the option; each occurrence
+may have its own pattern, KPIs, severity, duration, and volume stratum:
+
+```powershell
+python -m psap_kpi.evaluation.evaluation_collector `
+  --input-csv C:\temp\psap_eval\untouched_hourly_kpis.csv `
+  --run-dir C:\temp\psap-kpi\models\ae_cluster_runs\PINNED_RUN_ID `
+  --training-cutoff-utc "2026-06-30 23:59:59Z" `
+  --output-dir C:\temp\psap_eval\results `
+  --scenario "pattern=volume_spike,severity=moderate,duration=1,volume=low" `
+  --scenario "pattern=flapping,kpis=BID_SR+CSR_SR,severity=mild,duration=6,volume=medium"
+```
+
+Repeat --scenario any number of times. Valid patterns are volume_spike,
+volume_drop, kpi_degradation, multi_kpi_degradation, slow_burn,
+flapping, correlated_volume_sr, and benign_improvement. Severities are
+mild, moderate, or severe; durations are 1, 2, 3, or 6 hours; volume
+strata are low, medium, or high. Use + between multiple KPIs. Omitted
+fields default to moderate severity and one hour; omitting volume allows the
+injector to choose any volume stratum. --replicates must remain 1 when using
+explicit scenarios; repeat the scenario option when another independent test
+is wanted.
+
+Run from an untouched CSV (PowerShell)
+
+The CSV must contain one row per PSAP-hour with PSAP_ID, a timestamp named
+HOUR_START_UTC or EVAL_TS_UTC, and CALL_VOLUME, LSR_SR, ASR_SR,
+BID_SR, and CSR_SR.
+
+```powershell
+cd C:\temp\psap_kpi_evaluation_v1_1
+$env:PYTHONPATH = "$PWD\src"
+
+python -m psap_kpi.evaluation.evaluation_collector `
+  --input-csv C:\temp\psap_eval\untouched_hourly_kpis.csv `
+  --run-dir C:\temp\psap-kpi\models\ae_cluster_runs\PINNED_RUN_ID `
+  --training-cutoff-utc "2026-06-30 23:59:59Z" `
+  --output-dir C:\temp\psap_eval\results
+```
+
+Collect with the existing canonical Oracle loader
+
+This route reuses psap_utils.queries.build_inference_sql; it does not create a
+second KPI definition. Cache use is off by default for evaluation.
+
+```powershell
+python -m psap_kpi.evaluation.evaluation_collector `
+  --oracle `
+  --start-utc "2026-07-01 00:00:00Z" `
+  --end-utc "2026-07-31 00:00:00Z" `
+  --profile PRD `
+  --market ALL `
+  --run-dir C:\temp\psap-kpi\models\ae_cluster_runs\PINNED_RUN_ID `
+  --training-cutoff-utc "2026-06-30 23:59:59Z" `
+  --output-dir C:\temp\psap_eval\results
+```
+
+On later runs, add the previous baseline_scored_psap_hours.csv with
+--reference-scored-csv to enable score/KPI drift by cluster, market, PSAP,
+and weekday/weekend four-hour bucket.
+
+Outputs
+
+```text
+baseline_scored_psap_hours.csv   # Every planned untouched row, including skips
+paired_untouched_scored_psap_hours.csv # Exact untouched counterpart per event-hour
+synthetic_scored_psap_hours.csv  # Every synthetic challenge row
+per_head_score_evidence.csv      # Raw score, threshold, ratio, vote, availability
+synthetic_row_truth.csv          # Row-level controlled ground truth
+synthetic_event_truth.csv        # Event-level controlled ground truth
+psap_model_health_evidence.json  # Checks, metrics, scope, model/data identity
+```
+
+The JSON reports controlled event/row detection, time to detection, score lift,
+severity monotonicity, minimum detectable severity, temporal coverage, benign
+controls, alert burden per 1,000 PSAP-hours, scoring/head/mapping coverage,
+multi-head agreement and dispersion, score/threshold health, stability, and
+optional reference drift. Baseline alert burden is explicitly a proxy—not a
+false-positive rate—and synthetic precision/recall applies only to injected
+ground truth.
