@@ -1,0 +1,8 @@
+# Core evaluation dependencies. Run real scoring inside the same environment
+# that already contains the deployed model's Keras/TensorFlow, MLflow, and
+# Oracle dependencies.
+numpy>=1.26
+pandas>=2.2
+
+# Test runner (optional at runtime)
+pytest>=8.0
