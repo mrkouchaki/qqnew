@@ -1,0 +1,673 @@
+
+
+
+
+# ============================================================
+# 10. Automated Misroute Root-Cause Analysis
+# ============================================================
+
+from pathlib import Path
+import numpy as np
+import pandas as pd
+from IPython.display import display
+
+RCA_DIR = Path(OUTPUT_DIR) / "misroute_rca"
+RCA_DIR.mkdir(parents=True, exist_ok=True)
+
+calls = result["labeled_calls"].copy()
+
+required = [
+    "ROUTE_INTEGRITY_STATUS",
+    "FCC_PSAP_ID",
+    "EXPECTED_FCC_PSAP_ID",
+]
+
+missing = [c for c in required if c not in calls.columns]
+if missing:
+    raise ValueError(f"Missing required columns: {missing}")
+
+
+# ------------------------------------------------------------
+# Normalize fields
+# ------------------------------------------------------------
+
+def normalize_id(series):
+    result_series = (
+        series.astype("string")
+        .str.strip()
+        .str.replace('"', "", regex=False)
+        .str.replace(r"\.0+$", "", regex=True)
+        .str.upper()
+    )
+
+    result_series = result_series.mask(
+        result_series.isin(["", "NAN", "NONE", "NULL", "<NA>"])
+    )
+
+    return result_series.fillna("<MISSING>")
+
+
+id_columns = [
+    "FCC_PSAP_ID",
+    "EXPECTED_FCC_PSAP_ID",
+    "ENBID",
+    "USID",
+    "SETUP_ECGI_HEX",
+    "ESRK",
+]
+
+for column in id_columns:
+    if column not in calls.columns:
+        calls[column] = "<MISSING>"
+
+    calls[column] = normalize_id(calls[column])
+
+
+numeric_columns = [
+    "UNCERT_METERS",
+    "DISTANCE_TO_ROUTED_BOUNDARY_M",
+    "CALL_DURATION_SEC",
+    "CONFIDENCE",
+    "CELL_DISTANCE",
+]
+
+for column in numeric_columns:
+    if column not in calls.columns:
+        calls[column] = np.nan
+
+    calls[column] = pd.to_numeric(calls[column], errors="coerce")
+
+
+if "CALL_BEGIN_TIME_UTC" in calls.columns:
+    calls["CALL_TS"] = pd.to_datetime(
+        calls["CALL_BEGIN_TIME_UTC"],
+        errors="coerce",
+        utc=True,
+    )
+else:
+    calls["CALL_TS"] = pd.NaT
+
+calls["CALL_DAY"] = calls["CALL_TS"].dt.floor("D")
+
+calls["ROUTE_INTEGRITY_STATUS"] = (
+    calls["ROUTE_INTEGRITY_STATUS"]
+    .astype("string")
+    .str.strip()
+    .str.upper()
+)
+
+
+# ------------------------------------------------------------
+# Strong-label population
+# ------------------------------------------------------------
+
+strong = calls[
+    calls["ROUTE_INTEGRITY_STATUS"].isin(
+        ["DEFINITE_CORRECT", "DEFINITE_MISROUTE"]
+    )
+].copy()
+
+strong["MISROUTE_LABEL"] = (
+    strong["ROUTE_INTEGRITY_STATUS"] == "DEFINITE_MISROUTE"
+).astype(int)
+
+strong["DISTANCE_UNCERT_RATIO"] = np.where(
+    strong["UNCERT_METERS"] > 0,
+    strong["DISTANCE_TO_ROUTED_BOUNDARY_M"]
+    / strong["UNCERT_METERS"],
+    np.nan,
+)
+
+misroutes = strong[strong["MISROUTE_LABEL"] == 1].copy()
+
+global_misroute_rate = strong["MISROUTE_LABEL"].mean()
+
+
+# ------------------------------------------------------------
+# Wilson lower confidence bound
+# Prevents tiny groups from ranking too highly
+# ------------------------------------------------------------
+
+def wilson_lower_pct(successes, total, z=1.96):
+    successes = np.asarray(successes, dtype=float)
+    total = np.asarray(total, dtype=float)
+
+    p = successes / total
+    denominator = 1 + (z**2 / total)
+
+    center = p + (z**2 / (2 * total))
+
+    margin = z * np.sqrt(
+        (p * (1 - p) / total)
+        + (z**2 / (4 * total**2))
+    )
+
+    return 100 * (center - margin) / denominator
+
+
+# ------------------------------------------------------------
+# 1. Actual PSAP -> Expected PSAP summary
+# ------------------------------------------------------------
+
+pair_summary = (
+    misroutes.groupby(
+        ["FCC_PSAP_ID", "EXPECTED_FCC_PSAP_ID"],
+        dropna=False,
+    )
+    .agg(
+        MISROUTE_CALLS=("MISROUTE_LABEL", "size"),
+        DISTINCT_ENBIDS=("ENBID", "nunique"),
+        DISTINCT_USIDS=("USID", "nunique"),
+        DISTINCT_ECGIS=("SETUP_ECGI_HEX", "nunique"),
+        DISTINCT_ESRKS=("ESRK", "nunique"),
+        ACTIVE_DAYS=("CALL_DAY", "nunique"),
+        FIRST_SEEN_UTC=("CALL_TS", "min"),
+        LAST_SEEN_UTC=("CALL_TS", "max"),
+        MEDIAN_DISTANCE_M=("DISTANCE_TO_ROUTED_BOUNDARY_M", "median"),
+        P95_DISTANCE_M=(
+            "DISTANCE_TO_ROUTED_BOUNDARY_M",
+            lambda x: x.quantile(0.95),
+        ),
+        MEDIAN_UNCERTAINTY_M=("UNCERT_METERS", "median"),
+        MEDIAN_DISTANCE_UNCERT_RATIO=("DISTANCE_UNCERT_RATIO", "median"),
+    )
+    .reset_index()
+)
+
+routed_totals = (
+    strong.groupby("FCC_PSAP_ID")
+    .size()
+    .rename("TOTAL_STRONG_CALLS_ROUTED_TO_PSAP")
+    .reset_index()
+)
+
+expected_totals = (
+    strong.groupby("EXPECTED_FCC_PSAP_ID")
+    .size()
+    .rename("TOTAL_STRONG_CALLS_LOCATED_IN_EXPECTED_PSAP")
+    .reset_index()
+)
+
+pair_summary = pair_summary.merge(
+    routed_totals,
+    on="FCC_PSAP_ID",
+    how="left",
+)
+
+pair_summary = pair_summary.merge(
+    expected_totals,
+    on="EXPECTED_FCC_PSAP_ID",
+    how="left",
+)
+
+pair_summary["PAIR_RATE_WITHIN_ROUTED_PSAP_PCT"] = (
+    100
+    * pair_summary["MISROUTE_CALLS"]
+    / pair_summary["TOTAL_STRONG_CALLS_ROUTED_TO_PSAP"]
+)
+
+pair_summary["SHARE_OF_ALL_MISROUTES_PCT"] = (
+    100 * pair_summary["MISROUTE_CALLS"] / len(misroutes)
+)
+
+pair_summary = pair_summary.sort_values(
+    [
+        "MISROUTE_CALLS",
+        "DISTINCT_ECGIS",
+        "MEDIAN_DISTANCE_M",
+    ],
+    ascending=[False, False, False],
+).reset_index(drop=True)
+
+
+# ------------------------------------------------------------
+# 2. Entity-level root-cause analysis
+# ------------------------------------------------------------
+
+def classify_candidate(row):
+    misroute_count = row["MISROUTE_CALLS"]
+
+    if misroute_count == 0:
+        return "NO_MISROUTE"
+
+    pair_share = row.get("TOP_PAIR_SHARE_PCT", 0)
+    distance_ratio = row.get("MEDIAN_DISTANCE_UNCERT_RATIO", np.nan)
+    distinct_expected = row.get("DISTINCT_EXPECTED_PSAPS", 0)
+    level = row["LEVEL"]
+
+    clear_separation = (
+        pd.notna(distance_ratio) and distance_ratio >= 3
+    )
+
+    if (
+        misroute_count >= 3
+        and pair_share >= 80
+        and clear_separation
+    ):
+        if level in ["ECGI", "ENBID_USID", "ENBID_USID_ECGI"]:
+            return "LIKELY_CELL_TO_PSAP_MAPPING"
+
+        if level == "ESRK":
+            return "LIKELY_ESRK_TO_PSAP_MAPPING"
+
+        if level == "ENBID":
+            return "LIKELY_ENB_TO_PSAP_MAPPING"
+
+        return "REPEATED_PSAP_ROUTING_MAPPING"
+
+    if misroute_count >= 3 and distinct_expected > 1:
+        return "UNSTABLE_OR_MULTIPLE_EXPECTED_PSAP_PATTERN"
+
+    if not clear_separation:
+        return "NEAR_BOUNDARY_OR_LOCATION_REVIEW"
+
+    if misroute_count >= 2:
+        return "REPEATED_PATTERN_LOW_SUPPORT"
+
+    return "ISOLATED_MISROUTE"
+
+
+def build_entity_summary(level, keys):
+    base = (
+        strong.groupby(keys, dropna=False)
+        .agg(
+            TOTAL_STRONG_CALLS=("MISROUTE_LABEL", "size"),
+            MISROUTE_CALLS=("MISROUTE_LABEL", "sum"),
+            FIRST_CALL_UTC=("CALL_TS", "min"),
+            LAST_CALL_UTC=("CALL_TS", "max"),
+        )
+        .reset_index()
+    )
+
+    misroute_details = (
+        misroutes.groupby(keys, dropna=False)
+        .agg(
+            DISTINCT_EXPECTED_PSAPS=(
+                "EXPECTED_FCC_PSAP_ID",
+                "nunique",
+            ),
+            MISROUTE_ACTIVE_DAYS=("CALL_DAY", "nunique"),
+            MEDIAN_DISTANCE_M=(
+                "DISTANCE_TO_ROUTED_BOUNDARY_M",
+                "median",
+            ),
+            P95_DISTANCE_M=(
+                "DISTANCE_TO_ROUTED_BOUNDARY_M",
+                lambda x: x.quantile(0.95),
+            ),
+            MEDIAN_UNCERTAINTY_M=("UNCERT_METERS", "median"),
+            MEDIAN_DISTANCE_UNCERT_RATIO=(
+                "DISTANCE_UNCERT_RATIO",
+                "median",
+            ),
+        )
+        .reset_index()
+    )
+
+    top_pair_group = list(keys)
+
+    if "FCC_PSAP_ID" not in top_pair_group:
+        top_pair_group.append("FCC_PSAP_ID")
+
+    if "EXPECTED_FCC_PSAP_ID" not in top_pair_group:
+        top_pair_group.append("EXPECTED_FCC_PSAP_ID")
+
+    top_pair = (
+        misroutes.groupby(top_pair_group, dropna=False)
+        .size()
+        .reset_index(name="TOP_PAIR_MISROUTES")
+        .sort_values("TOP_PAIR_MISROUTES", ascending=False)
+        .drop_duplicates(subset=keys)
+    )
+
+    rename_columns = {
+        "FCC_PSAP_ID": "TOP_ROUTED_FCC_PSAP_ID",
+        "EXPECTED_FCC_PSAP_ID": "TOP_EXPECTED_FCC_PSAP_ID",
+    }
+
+    for column in keys:
+        rename_columns.pop(column, None)
+
+    top_pair = top_pair.rename(columns=rename_columns)
+
+    output = base.merge(
+        misroute_details,
+        on=keys,
+        how="left",
+    )
+
+    output = output.merge(
+        top_pair,
+        on=keys,
+        how="left",
+    )
+
+    if "TOP_ROUTED_FCC_PSAP_ID" not in output.columns:
+        output["TOP_ROUTED_FCC_PSAP_ID"] = output["FCC_PSAP_ID"]
+
+    fill_zero_columns = [
+        "MISROUTE_CALLS",
+        "DISTINCT_EXPECTED_PSAPS",
+        "MISROUTE_ACTIVE_DAYS",
+        "TOP_PAIR_MISROUTES",
+    ]
+
+    for column in fill_zero_columns:
+        output[column] = output[column].fillna(0).astype(int)
+
+    output["MISROUTE_RATE_PCT"] = (
+        100
+        * output["MISROUTE_CALLS"]
+        / output["TOTAL_STRONG_CALLS"]
+    )
+
+    output["WILSON_LOWER_RATE_PCT"] = wilson_lower_pct(
+        output["MISROUTE_CALLS"],
+        output["TOTAL_STRONG_CALLS"],
+    )
+
+    output["TOP_PAIR_SHARE_PCT"] = np.where(
+        output["MISROUTE_CALLS"] > 0,
+        100
+        * output["TOP_PAIR_MISROUTES"]
+        / output["MISROUTE_CALLS"],
+        0,
+    )
+
+    output["LEVEL"] = level
+
+    output["KEY_COMPLETE"] = True
+    for column in keys:
+        output["KEY_COMPLETE"] &= output[column].ne("<MISSING>")
+
+    output["ROOT_CAUSE_HYPOTHESIS"] = output.apply(
+        classify_candidate,
+        axis=1,
+    )
+
+    return output
+
+
+entity_levels = {
+    "ROUTED_PSAP": ["FCC_PSAP_ID"],
+    "ENBID": ["ENBID"],
+    "USID": ["USID"],
+    "ECGI": ["SETUP_ECGI_HEX"],
+    "ESRK": ["ESRK"],
+    "ENBID_USID": ["ENBID", "USID"],
+    "ENBID_USID_ECGI": [
+        "ENBID",
+        "USID",
+        "SETUP_ECGI_HEX",
+    ],
+}
+
+entity_tables = [
+    build_entity_summary(level, keys)
+    for level, keys in entity_levels.items()
+]
+
+entity_risk = pd.concat(
+    entity_tables,
+    ignore_index=True,
+    sort=False,
+)
+
+root_cause_candidates = entity_risk[
+    entity_risk["KEY_COMPLETE"]
+    & (entity_risk["TOTAL_STRONG_CALLS"] >= 5)
+    & (entity_risk["MISROUTE_CALLS"] >= 3)
+].copy()
+
+root_cause_candidates = root_cause_candidates.sort_values(
+    [
+        "MISROUTE_CALLS",
+        "WILSON_LOWER_RATE_PCT",
+        "TOP_PAIR_SHARE_PCT",
+        "MEDIAN_DISTANCE_M",
+    ],
+    ascending=[False, False, False, False],
+).reset_index(drop=True)
+
+
+# ------------------------------------------------------------
+# 3. Existing PSAPSIM feature correlation
+# No external bridge required
+# ------------------------------------------------------------
+
+categorical_candidates = [
+    "POS_METHOD_USED",
+    "REGION",
+    "MARKET_CLUSTER",
+    "MARKET",
+    "COUNTY",
+    "STATE",
+    "GMLC_VENDOR",
+    "CELL_TIME_ZONE",
+    "ESRK_MATCH_YN",
+    "CLASS_OF_SERVICE_YN",
+    "VALIDATION_PASSED",
+    "PHASE",
+    "SITE_MATCH",
+    "PHYSICAL_SECTOR_MATCH",
+    "TECHNOLOGY_MATCH",
+    "IN_BAND_FREQ_MATCH",
+    "BAND_MATCH",
+    "LOCATE_ECGI_VALIDATION",
+    "SOURCE_911LOG",
+    "SUMMARY_YN",
+    "EMAIL_YN",
+    "TEXTMSG_YN",
+]
+
+feature_rows = []
+
+for feature in categorical_candidates:
+    if feature not in strong.columns:
+        continue
+
+    temporary = strong[[feature, "MISROUTE_LABEL"]].copy()
+
+    temporary["FEATURE_VALUE"] = (
+        temporary[feature]
+        .astype("string")
+        .str.strip()
+        .str.upper()
+        .fillna("<MISSING>")
+        .replace("", "<MISSING>")
+    )
+
+    summary = (
+        temporary.groupby("FEATURE_VALUE", dropna=False)
+        .agg(
+            TOTAL_STRONG_CALLS=("MISROUTE_LABEL", "size"),
+            MISROUTE_CALLS=("MISROUTE_LABEL", "sum"),
+        )
+        .reset_index()
+    )
+
+    summary["FEATURE"] = feature
+    summary["MISROUTE_RATE_PCT"] = (
+        100
+        * summary["MISROUTE_CALLS"]
+        / summary["TOTAL_STRONG_CALLS"]
+    )
+
+    summary["RATE_LIFT_VS_GLOBAL"] = (
+        summary["MISROUTE_RATE_PCT"]
+        / (100 * global_misroute_rate)
+    )
+
+    summary["EXPECTED_MISROUTES_AT_BASELINE"] = (
+        summary["TOTAL_STRONG_CALLS"]
+        * global_misroute_rate
+    )
+
+    summary["EXCESS_MISROUTES"] = (
+        summary["MISROUTE_CALLS"]
+        - summary["EXPECTED_MISROUTES_AT_BASELINE"]
+    )
+
+    feature_rows.append(summary)
+
+if feature_rows:
+    feature_risk = pd.concat(
+        feature_rows,
+        ignore_index=True,
+    )
+
+    feature_risk = feature_risk[
+        (feature_risk["TOTAL_STRONG_CALLS"] >= 10)
+        & (feature_risk["MISROUTE_CALLS"] >= 2)
+    ].copy()
+
+    feature_risk = feature_risk.sort_values(
+        [
+            "EXCESS_MISROUTES",
+            "MISROUTE_CALLS",
+            "RATE_LIFT_VS_GLOBAL",
+        ],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+
+else:
+    feature_risk = pd.DataFrame()
+
+
+# ------------------------------------------------------------
+# 4. Numeric feature comparison
+# ------------------------------------------------------------
+
+numeric_comparison_rows = []
+
+for feature in numeric_columns:
+    if feature not in strong.columns:
+        continue
+
+    correct_values = strong.loc[
+        strong["MISROUTE_LABEL"] == 0,
+        feature,
+    ].dropna()
+
+    misroute_values = strong.loc[
+        strong["MISROUTE_LABEL"] == 1,
+        feature,
+    ].dropna()
+
+    if len(misroute_values) == 0:
+        continue
+
+    correct_median = correct_values.median()
+    misroute_median = misroute_values.median()
+
+    numeric_comparison_rows.append({
+        "FEATURE": feature,
+        "CORRECT_NON_NULL": len(correct_values),
+        "MISROUTE_NON_NULL": len(misroute_values),
+        "CORRECT_MEDIAN": correct_median,
+        "MISROUTE_MEDIAN": misroute_median,
+        "MEDIAN_DIFFERENCE": misroute_median - correct_median,
+        "CORRECT_P90": correct_values.quantile(0.90),
+        "MISROUTE_P90": misroute_values.quantile(0.90),
+    })
+
+numeric_comparison = pd.DataFrame(numeric_comparison_rows)
+
+
+# ------------------------------------------------------------
+# 5. Daily trend
+# ------------------------------------------------------------
+
+daily_summary = (
+    strong.dropna(subset=["CALL_DAY"])
+    .groupby("CALL_DAY")
+    .agg(
+        TOTAL_STRONG_CALLS=("MISROUTE_LABEL", "size"),
+        MISROUTE_CALLS=("MISROUTE_LABEL", "sum"),
+    )
+    .reset_index()
+)
+
+daily_summary["MISROUTE_RATE_PCT"] = (
+    100
+    * daily_summary["MISROUTE_CALLS"]
+    / daily_summary["TOTAL_STRONG_CALLS"]
+)
+
+
+# ------------------------------------------------------------
+# 6. Missing boundary coverage
+# ------------------------------------------------------------
+
+missing_boundary = calls[
+    calls["ROUTE_INTEGRITY_STATUS"] == "MISSING_ROUTED_BOUNDARY"
+].copy()
+
+if not missing_boundary.empty:
+    missing_boundary_summary = (
+        missing_boundary.groupby("FCC_PSAP_ID", dropna=False)
+        .agg(
+            MISSING_BOUNDARY_CALLS=(
+                "ROUTE_INTEGRITY_STATUS",
+                "size",
+            ),
+            DISTINCT_ENBIDS=("ENBID", "nunique"),
+            DISTINCT_USIDS=("USID", "nunique"),
+            DISTINCT_ECGIS=("SETUP_ECGI_HEX", "nunique"),
+            FIRST_SEEN_UTC=("CALL_TS", "min"),
+            LAST_SEEN_UTC=("CALL_TS", "max"),
+        )
+        .reset_index()
+        .sort_values(
+            "MISSING_BOUNDARY_CALLS",
+            ascending=False,
+        )
+    )
+else:
+    missing_boundary_summary = pd.DataFrame()
+
+
+# ------------------------------------------------------------
+# Save results
+# ------------------------------------------------------------
+
+outputs = {
+    "01_misroute_pair_summary.csv": pair_summary,
+    "02_root_cause_candidates.csv": root_cause_candidates,
+    "03_entity_risk_all.csv": entity_risk,
+    "04_existing_feature_risk.csv": feature_risk,
+    "05_numeric_feature_comparison.csv": numeric_comparison,
+    "06_daily_misroute_summary.csv": daily_summary,
+    "07_missing_boundary_summary.csv": missing_boundary_summary,
+}
+
+for filename, dataframe in outputs.items():
+    dataframe.to_csv(
+        RCA_DIR / filename,
+        index=False,
+    )
+
+
+# ------------------------------------------------------------
+# Main results
+# ------------------------------------------------------------
+
+print(f"Strong-label calls: {len(strong):,}")
+print(f"Definite misroutes: {len(misroutes):,}")
+print(f"Misroute rate: {100 * global_misroute_rate:.2f}%")
+print(f"Root-cause candidates: {len(root_cause_candidates):,}")
+print(f"Saved to: {RCA_DIR}")
+
+print("\nTop actual -> expected PSAP pairs:")
+display(pair_summary.head(20))
+
+print("\nTop automated root-cause candidates:")
+display(root_cause_candidates.head(30))
+
+print("\nExisting PSAPSIM features associated with misroutes:")
+display(feature_risk.head(30))
+
+print("\nNumeric comparison:")
+display(numeric_comparison)
+
+
