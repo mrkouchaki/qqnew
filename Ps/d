@@ -671,3 +671,73 @@ print("\nNumeric comparison:")
 display(numeric_comparison)
 
 
+
+
+
+
+
+
+
+
+
+
+
+# Most-specific automated root-cause candidates
+
+priority_columns = [
+    "LEVEL",
+    "ENBID",
+    "USID",
+    "SETUP_ECGI_HEX",
+    "ESRK",
+    "TOP_ROUTED_FCC_PSAP_ID",
+    "TOP_EXPECTED_FCC_PSAP_ID",
+    "TOTAL_STRONG_CALLS",
+    "MISROUTE_CALLS",
+    "MISROUTE_RATE_PCT",
+    "TOP_PAIR_SHARE_PCT",
+    "MISROUTE_ACTIVE_DAYS",
+    "MEDIAN_DISTANCE_M",
+    "MEDIAN_UNCERTAINTY_M",
+    "ROOT_CAUSE_HYPOTHESIS",
+]
+
+priority_mapping = root_cause_candidates[
+    root_cause_candidates["LEVEL"].isin([
+        "ENBID_USID_ECGI",
+        "ESRK",
+    ])
+    & (root_cause_candidates["TOP_PAIR_SHARE_PCT"] >= 80)
+].copy()
+
+priority_mapping = priority_mapping.sort_values(
+    [
+        "MISROUTE_CALLS",
+        "MISROUTE_RATE_PCT",
+        "MISROUTE_ACTIVE_DAYS",
+    ],
+    ascending=[False, False, False],
+)
+
+priority_mapping = priority_mapping.reindex(
+    columns=priority_columns
+).drop_duplicates()
+
+display(priority_mapping.head(50))
+
+priority_mapping.to_csv(
+    RCA_DIR / "08_priority_mapping_defects.csv",
+    index=False,
+)
+
+print("\nTop PSAP routing pairs:")
+display(pair_summary.head(30))
+
+
+
+
+
+
+
+
+
