@@ -1,1 +1,67 @@
 a
+
+
+
+
+
+
+
+Agreed. That structure is more accurate. IMS/PSAP and cross-domain RCA are supporting investigations under the E911 work, not separate delivered contributions yet. And for #5, we should distinguish what you have actually implemented from the future self-healing direction.
+
+I would present your contributions as these three major areas:
+
+AT&T Contribution Highlights
+
+1. E911 Network Anomaly Detection and Root Cause Analysis
+
+* Developed an anomaly detection framework for E911 network telemetry, focused on identifying abnormal network and configuration behavior that can potentially affect emergency-service reliability.
+* Designed and iteratively improved the CESMLC anomaly detection solution using Isolation Forest, temporal change analysis, and signature-based classification.
+* Worked with large-scale historical E911 datasets containing millions of ECGI-level records per day and developed an efficient approach for analyzing changes across multiple days.
+* Identified and classified abnormal ECGI behavior into meaningful patterns, including high-frequency changes, back-and-forth configuration changes, multi-feature changes, and rare changes.
+* Performed root-cause investigation on the highest-risk anomalies, tracing detected abnormalities back to specific network/configuration behaviors instead of providing anomaly scores alone.
+* Extended the solution toward continuous operational monitoring by tracking incidents as NEW, ONGOING, RECOVERED, and RECURRED, providing a foundation for daily automated anomaly and RCA reporting.
+
+2. E911 Emergency Call Integrity and Failure Analysis
+
+* Initiated development of an end-to-end Emergency Call Routing Integrity framework to move E911 analytics from indirect KPI monitoring toward measurable emergency-call outcomes.
+* Designed an approach to determine whether an emergency call was routed to the geographically responsible PSAP by combining GMLC call location, location uncertainty, routed PSAP information, and PSAP geographic boundaries.
+* Defined call-level outcomes including correct routing, ambiguous routing, likely misroute, and unavailable/unusable location, creating a foundation for quantifying actual routing impact.
+* Investigated GMLC, IMS, CCDR, PSAP, and related E911 datasets to determine what evidence is available across the emergency-call path for identifying signaling, location acquisition, routing, and delivery problems.
+* Investigated IMS/PSAP network behavior and relevant indicators such as SIP signaling, Q.850 causes, Diameter/location errors, ESRK behavior, default routing, and PSAP KPIs as potential evidence for explaining detected call failures.
+* Designed the foundation for connecting detected call-level problems with the surrounding network evidence, enabling future automated root-cause analysis and misroute-risk prediction.
+
+3. ML Model Health Monitoring and Self-Healing Framework
+
+* Developed a reusable model-health monitoring framework for deployed ML solutions, with initial implementation and testing on the EWOC model.
+* Built a collector that brings together new Oracle production data, model inference results, model-performance metrics, data-quality information, drift indicators, and MLflow metadata.
+* Developed automated health checks to identify potential data-quality issues, model-performance degradation, prediction drift, and other model-health risks.
+* Designed and implemented controlled model test scenarios to evaluate model behavior under changing or degraded input conditions rather than relying only on static training/test metrics.
+* Integrated the workflow with MLflow for model/version tracking and health/performance metrics.
+* Investigated and prototyped the next stages of the architecture, including passing health-check evidence to an RCA Agent and using identified issues to support model retraining and remediation.
+* Established the technical foundation for progressing from conventional model monitoring toward a self-healing ML architecture: monitoring → issue detection → RCA → retraining/remediation → validation.
+
+Overall Value
+
+These contributions are centered on a common objective: making AI/ML systems more operational, explainable, and actionable.
+
+The work progresses from detecting abnormal E911 network behavior, to measuring its potential impact at the emergency-call level, and from simply deploying ML models to continuously evaluating their health and investigating the causes of degradation.
+
+E911 Network Data → Anomaly Detection → Call-Level Impact → Root-Cause Evidence
+
+ML Deployment → Continuous Health Monitoring → RCA → Remediation / Self-Healing
+
+This version is also safer for a performance discussion because it clearly separates developed/implemented work from investigation, design, and future direction, so it doesn’t overclaim deployment or production impact.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
