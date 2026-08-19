@@ -1,1 +1,39 @@
 a
+
+
+
+
+
+
+
+
+
+# Resume after V5_PROBABLE_CAUSE argument error.
+# This does NOT repeat the 75-minute preparation.
+
+con.create_function("V5_PROBABLE_CAUSE", 13, v5_probable_cause)
+con.execute("DROP TABLE IF EXISTS temp.misroute_investigation_v5")
+
+source = get_ipython().history_manager.input_hist_raw[18]
+marker = 'fallback_delta = f"('
+start = source.find(marker)
+
+if start < 0:
+    raise RuntimeError("Resume marker not found in cell In[18].")
+
+print("Resuming final scoring and exports only...")
+exec(compile(source[start:], "<v5-resume>", "exec"), globals(), globals())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
