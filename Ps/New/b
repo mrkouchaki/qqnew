@@ -1,0 +1,818 @@
+
+
+
+
+
+# ============================================================
+# TOP-100 MISROUTE INVESTIGATION PRESENTATION PACK
+# Uses the completed misroute_investigation_v5 output only.
+#
+# Creates:
+#   1. misroute_top100_all_features.csv
+#   2. misroute_top100_network_expert.csv
+#   3. misroute_feature_guide.csv
+#   4. misroute_top100_network_expert_pack.xlsx
+# ============================================================
+
+from pathlib import Path
+import sqlite3
+import numpy as np
+import pandas as pd
+from IPython.display import display, Markdown
+
+# ------------------------------------------------------------
+# 1. Locate/load the completed v5 investigation output
+# ------------------------------------------------------------
+
+search_dirs = []
+
+for variable_name in ["OUTPUT_DIR", "V5_OUTPUT_DIR", "ROOT_DIR"]:
+    value = globals().get(variable_name)
+    if value is not None:
+        p = Path(value)
+        search_dirs.extend([p, p / "outputs"])
+
+search_dirs.extend([
+    Path.cwd(),
+    Path.cwd() / "outputs",
+    Path(r"C:\temp\gmlc_v2"),
+    Path(r"C:\temp\gmlc_v2\outputs"),
+])
+
+# Remove duplicate paths
+search_dirs = list(dict.fromkeys(search_dirs))
+
+source_file = None
+for folder in search_dirs:
+    candidate = folder / "misroute_investigation_v5.csv"
+    if candidate.exists():
+        source_file = candidate
+        break
+
+if source_file is None:
+    for folder in search_dirs:
+        if folder.exists():
+            matches = sorted(folder.glob("misroute_investigation_v5*.csv"))
+            if matches:
+                source_file = matches[0]
+                break
+
+# Prefer CSV; otherwise use an existing DataFrame or SQLite table
+if source_file is not None:
+    investigation = pd.read_csv(
+        source_file,
+        dtype="string",
+        low_memory=False
+    )
+    export_dir = source_file.parent
+    source_description = str(source_file)
+
+elif isinstance(globals().get("misroute_investigation_v5"), pd.DataFrame):
+    investigation = globals()["misroute_investigation_v5"].copy()
+    export_dir = Path(globals().get("OUTPUT_DIR", Path.cwd()))
+    source_description = "DataFrame: misroute_investigation_v5"
+
+elif isinstance(globals().get("investigation_v5"), pd.DataFrame):
+    investigation = globals()["investigation_v5"].copy()
+    export_dir = Path(globals().get("OUTPUT_DIR", Path.cwd()))
+    source_description = "DataFrame: investigation_v5"
+
+elif "con" in globals() and isinstance(con, sqlite3.Connection):
+    investigation = pd.read_sql_query(
+        "SELECT * FROM misroute_investigation_v5",
+        con
+    )
+    export_dir = Path(globals().get("OUTPUT_DIR", Path.cwd()))
+    source_description = "SQLite table: misroute_investigation_v5"
+
+else:
+    raise FileNotFoundError(
+        "Could not find misroute_investigation_v5.csv, "
+        "a v5 DataFrame, or the SQLite v5 table."
+    )
+
+export_dir.mkdir(parents=True, exist_ok=True)
+
+# Standardize headers
+investigation.columns = [
+    str(c).strip().upper().replace(" ", "_")
+    for c in investigation.columns
+]
+
+if investigation.columns.duplicated().any():
+    raise ValueError("Duplicate column names found in v5 output.")
+
+columns = list(investigation.columns)
+
+
+def first_existing(*names):
+    for name in names:
+        if name in columns:
+            return name
+    return None
+
+
+def find_mode(prefix, population):
+    expected_suffix = f"_{population}_MODE"
+
+    for c in columns:
+        if c.startswith(prefix) and c.endswith(expected_suffix):
+            return c
+
+    return None
+
+
+def numeric_series(column, default=0.0):
+    if column is None:
+        return pd.Series(default, index=investigation.index, dtype="float64")
+
+    return pd.to_numeric(
+        investigation[column],
+        errors="coerce"
+    ).fillna(default)
+
+
+# ------------------------------------------------------------
+# 2. Rank investigations
+# ------------------------------------------------------------
+
+misroute_col = first_existing(
+    "MISROUTE_CALLS",
+    "COHORT_MISROUTE_CALLS"
+)
+
+strong_col = first_existing(
+    "TOTAL_STRONG_CALLS",
+    "COHORT_TOTAL_STRONG_CALLS"
+)
+
+control_col = first_existing(
+    "MATCHED_CORRECT_CONTROL_CALLS",
+    "CORRECT_CONTROL_CALLS"
+)
+
+score_col = first_existing("CORROBORATION_SCORE")
+
+investigation["_SORT_SCORE"] = numeric_series(score_col)
+investigation["_SORT_MISROUTES"] = numeric_series(misroute_col)
+investigation["_SORT_CONTROLS"] = numeric_series(control_col)
+
+ranked = (
+    investigation
+    .sort_values(
+        ["_SORT_SCORE", "_SORT_MISROUTES", "_SORT_CONTROLS"],
+        ascending=[False, False, False],
+        kind="stable"
+    )
+    .head(100)
+    .drop(columns=[
+        "_SORT_SCORE",
+        "_SORT_MISROUTES",
+        "_SORT_CONTROLS"
+    ])
+    .copy()
+)
+
+ranked.insert(0, "PRESENTATION_RANK", range(1, len(ranked) + 1))
+
+
+# ------------------------------------------------------------
+# 3. Determine important network/signaling columns
+# ------------------------------------------------------------
+
+route_status_case = find_mode("ROUTE_STATUS_GMLC", "MISROUTE")
+route_status_control = find_mode("ROUTE_STATUS_GMLC", "CONTROL")
+
+route_esinet_case = find_mode("ROUTE_ESINET", "MISROUTE")
+route_esinet_control = find_mode("ROUTE_ESINET", "CONTROL")
+
+route_esz_case = find_mode("ROUTE_ESZ", "MISROUTE")
+route_esz_control = find_mode("ROUTE_ESZ", "CONTROL")
+
+fallback_case = find_mode("ROUTE_FALLBACK", "MISROUTE")
+fallback_control = find_mode("ROUTE_FALLBACK", "CONTROL")
+
+default_case = find_mode("DEFAULT_ROUTED_CALL", "MISROUTE")
+default_control = find_mode("DEFAULT_ROUTED_CALL", "CONTROL")
+
+sip_status_case = find_mode("SIP_STATUS", "MISROUTE")
+sip_status_control = find_mode("SIP_STATUS", "CONTROL")
+
+sip_method_case = find_mode("SIP_SIP_METHOD", "MISROUTE")
+sip_method_control = find_mode("SIP_SIP_METHOD", "CONTROL")
+
+failure_case = find_mode("FAILURE_SHORT_DR", "MISROUTE")
+failure_control = find_mode("FAILURE_SHORT_DR", "CONTROL")
+
+ims_sip_case = find_mode("IMS_SIP_METHOD", "MISROUTE")
+ims_sip_control = find_mode("IMS_SIP_METHOD", "CONTROL")
+
+ims_pcscf_case = find_mode("IMS_REGISTER_PCSCF_STATUS", "MISROUTE")
+ims_pcscf_control = find_mode("IMS_REGISTER_PCSCF_STATUS", "CONTROL")
+
+ims_reason_case = find_mode("IMS_REGISTER_PCSCF_REASONCODES", "MISROUTE")
+ims_reason_control = find_mode("IMS_REGISTER_PCSCF_REASONCODES", "CONTROL")
+
+raw_corr_case = find_mode("RAW_CORRELATION_STATUS", "MISROUTE")
+raw_corr_control = find_mode("RAW_CORRELATION_STATUS", "CONTROL")
+
+raw_ecscf_case = find_mode("RAW_ECSCF_STATUS", "MISROUTE")
+raw_ecscf_control = find_mode("RAW_ECSCF_STATUS", "CONTROL")
+
+raw_pcscf_case = find_mode("RAW_REGISTER_PCSCF_STATUS", "MISROUTE")
+raw_pcscf_control = find_mode("RAW_REGISTER_PCSCF_STATUS", "CONTROL")
+
+raw_non_pcscf_case = find_mode(
+    "RAW_NON_REGISTER_PCSCF_STATUS", "MISROUTE"
+)
+raw_non_pcscf_control = find_mode(
+    "RAW_NON_REGISTER_PCSCF_STATUS", "CONTROL"
+)
+
+
+def text_value(row, column):
+    if column is None:
+        return ""
+
+    value = row.get(column)
+
+    if value is None or pd.isna(value):
+        return ""
+
+    value = str(value).strip()
+
+    if value.upper() in {"", "<MISSING>", "NAN", "NONE"}:
+        return ""
+
+    return value
+
+
+def values_differ(row, case_column, control_column):
+    case = text_value(row, case_column)
+    control = text_value(row, control_column)
+
+    return bool(
+        case and control and
+        case.upper() != control.upper()
+    )
+
+
+def network_interpretation(row):
+    route_case = text_value(row, route_status_case)
+    route_control = text_value(row, route_status_control)
+
+    esinet_case = text_value(row, route_esinet_case)
+    esinet_control = text_value(row, route_esinet_control)
+
+    esz_case = text_value(row, route_esz_case)
+    esz_control = text_value(row, route_esz_control)
+
+    fallback = text_value(row, fallback_case)
+    default_route = text_value(row, default_case)
+
+    sip_case = text_value(row, sip_status_case)
+    sip_control = text_value(row, sip_status_control)
+
+    ims_case = text_value(row, ims_pcscf_case)
+    ims_control = text_value(row, ims_pcscf_control)
+
+    raw_case = text_value(row, raw_ecscf_case)
+    raw_control = text_value(row, raw_ecscf_control)
+
+    route_upper = route_case.upper()
+
+    if "ESRK" in route_upper and "MISMATCH" in route_upper:
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "GMLC routing",
+            "PRIMARY_NETWORK_SIGN":
+                f"ROUTE_STATUS_GMLC={route_case}",
+            "WHY_THIS_IS_A_SIGN":
+                "The location/eCGI matched, but the ESRK routing result "
+                "disagreed. Repetition across the same cells and PSAP pairs "
+                "supports an ESRK/ESZ/ESInet-to-PSAP mapping or crosswalk issue.",
+            "NETWORK_EVIDENCE_STRENGTH": "STRONG ASSOCIATION"
+        })
+
+    if values_differ(row, route_status_case, route_status_control):
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "GMLC routing",
+            "PRIMARY_NETWORK_SIGN":
+                f"Misroute={route_case}; correct control={route_control}",
+            "WHY_THIS_IS_A_SIGN":
+                "The dominant GMLC routing outcome differs from similar "
+                "correctly routed calls, supporting a routing configuration "
+                "or mapping difference.",
+            "NETWORK_EVIDENCE_STRENGTH": "STRONG ASSOCIATION"
+        })
+
+    if (
+        values_differ(row, route_esinet_case, route_esinet_control) or
+        values_differ(row, route_esz_case, route_esz_control)
+    ):
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "GMLC ESInet/ESZ",
+            "PRIMARY_NETWORK_SIGN":
+                f"ESInet {esinet_case or 'n/a'} vs "
+                f"{esinet_control or 'n/a'}; "
+                f"ESZ {esz_case or 'n/a'} vs {esz_control or 'n/a'}",
+            "WHY_THIS_IS_A_SIGN":
+                "The misroute cohort selects a different ESInet or ESZ than "
+                "matched correct calls. This can indicate a stale or incorrect "
+                "routing-zone-to-PSAP crosswalk.",
+            "NETWORK_EVIDENCE_STRENGTH": "STRONG ASSOCIATION"
+        })
+
+    fallback_upper = f"{fallback} {default_route}".upper()
+    if (
+        "FALLBACK" in fallback_upper or
+        fallback_upper.strip() in {"1", "Y", "YES", "TRUE"}
+    ):
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "GMLC fallback/default routing",
+            "PRIMARY_NETWORK_SIGN":
+                f"Fallback={fallback or 'n/a'}; "
+                f"default={default_route or 'n/a'}",
+            "WHY_THIS_IS_A_SIGN":
+                "Fallback or default routing may bypass the normal "
+                "cell/ESRK-to-PSAP mapping and route the call to a default PSAP.",
+            "NETWORK_EVIDENCE_STRENGTH": "SUPPORTING ASSOCIATION"
+        })
+
+    if values_differ(row, sip_status_case, sip_status_control):
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "GMLC SIP signaling",
+            "PRIMARY_NETWORK_SIGN":
+                f"SIP misroute={sip_case}; correct control={sip_control}",
+            "WHY_THIS_IS_A_SIGN":
+                "The dominant SIP status differs from correct controls. "
+                "This may identify a signaling branch associated with the "
+                "routing pattern, but it does not by itself prove the cause.",
+            "NETWORK_EVIDENCE_STRENGTH": "SUPPORTING ASSOCIATION"
+        })
+
+    if values_differ(row, ims_pcscf_case, ims_pcscf_control):
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "IMS/P-CSCF",
+            "PRIMARY_NETWORK_SIGN":
+                f"IMS P-CSCF misroute={ims_case}; "
+                f"correct control={ims_control}",
+            "WHY_THIS_IS_A_SIGN":
+                "P-CSCF registration behavior differs from matched correct "
+                "calls, so the IMS registration path may be associated with "
+                "this cohort.",
+            "NETWORK_EVIDENCE_STRENGTH": "SUPPORTING ASSOCIATION"
+        })
+
+    if values_differ(row, raw_ecscf_case, raw_ecscf_control):
+        return pd.Series({
+            "NETWORK_EVIDENCE_SOURCE": "CCDR/E-CSCF",
+            "PRIMARY_NETWORK_SIGN":
+                f"E-CSCF misroute={raw_case}; correct control={raw_control}",
+            "WHY_THIS_IS_A_SIGN":
+                "E-CSCF status differs from correct controls and may identify "
+                "a core-routing or registration branch associated with the "
+                "misroutes.",
+            "NETWORK_EVIDENCE_STRENGTH": "SUPPORTING ASSOCIATION"
+        })
+
+    return pd.Series({
+        "NETWORK_EVIDENCE_SOURCE": "No isolated network field",
+        "PRIMARY_NETWORK_SIGN":
+            "No single GMLC/IMS/CCDR mode clearly differs from controls",
+        "WHY_THIS_IS_A_SIGN":
+            "The geometry pattern is strong, but the available network fields "
+            "do not isolate one signaling or registration issue. Review the "
+            "routing crosswalk and PSAP identifier semantics.",
+        "NETWORK_EVIDENCE_STRENGTH": "GEOMETRY EVIDENCE ONLY"
+    })
+
+
+interpretation = ranked.apply(network_interpretation, axis=1)
+
+
+# ------------------------------------------------------------
+# 4. Build the concise network-expert table
+# ------------------------------------------------------------
+
+identifier_columns = [
+    "PRESENTATION_RANK",
+    "FCC_PSAP_ID",
+    "EXPECTED_FCC_PSAP_ID",
+    "PSAP_NAME",
+    "EXPECTED_PSAP_NAME",
+    "MARKET",
+    "MARKET_CLUSTER",
+    "REGION",
+    "STATE",
+    "COUNTY",
+    "SETUP_ECGI_HEX",
+    "USID",
+    "ESRK",
+    "CALL_POPULATION_TAG",
+    "TOTAL_STRONG_CALLS",
+    "MISROUTE_CALLS",
+    "MATCHED_CORRECT_CONTROL_CALLS",
+]
+
+network_columns = [
+    route_status_case,
+    route_status_control,
+    route_esinet_case,
+    route_esinet_control,
+    route_esz_case,
+    route_esz_control,
+    fallback_case,
+    fallback_control,
+    default_case,
+    default_control,
+    sip_status_case,
+    sip_status_control,
+    sip_method_case,
+    sip_method_control,
+    failure_case,
+    failure_control,
+    ims_sip_case,
+    ims_sip_control,
+    ims_pcscf_case,
+    ims_pcscf_control,
+    ims_reason_case,
+    ims_reason_control,
+    raw_corr_case,
+    raw_corr_control,
+    raw_ecscf_case,
+    raw_ecscf_control,
+    raw_pcscf_case,
+    raw_pcscf_control,
+    raw_non_pcscf_case,
+    raw_non_pcscf_control,
+]
+
+conclusion_columns = [
+    "PROBABLE_CAUSE_CATEGORY",
+    "EVIDENCE_CONCLUSION",
+    "EVIDENCE_SUMMARY",
+    "CAUSALITY_NOTE",
+]
+
+selected_columns = []
+for c in identifier_columns + network_columns + conclusion_columns:
+    if c is not None and c in ranked.columns and c not in selected_columns:
+        selected_columns.append(c)
+
+network_expert = ranked[selected_columns].copy()
+
+network_expert.insert(
+    len([c for c in identifier_columns if c in network_expert.columns]),
+    "NETWORK_EVIDENCE_SOURCE",
+    interpretation["NETWORK_EVIDENCE_SOURCE"].values
+)
+
+insert_location = network_expert.columns.get_loc(
+    "NETWORK_EVIDENCE_SOURCE"
+) + 1
+
+network_expert.insert(
+    insert_location,
+    "PRIMARY_NETWORK_SIGN",
+    interpretation["PRIMARY_NETWORK_SIGN"].values
+)
+
+network_expert.insert(
+    insert_location + 1,
+    "WHY_THIS_IS_A_SIGN",
+    interpretation["WHY_THIS_IS_A_SIGN"].values
+)
+
+network_expert.insert(
+    insert_location + 2,
+    "NETWORK_EVIDENCE_STRENGTH",
+    interpretation["NETWORK_EVIDENCE_STRENGTH"].values
+)
+
+# Clear rate: definite misroutes divided by strong calls in this row/cohort
+misroute_values = pd.to_numeric(
+    ranked[misroute_col] if misroute_col else np.nan,
+    errors="coerce"
+)
+
+strong_values = pd.to_numeric(
+    ranked[strong_col] if strong_col else np.nan,
+    errors="coerce"
+)
+
+network_expert["MISROUTE_RATE_PCT_IN_THIS_COHORT"] = (
+    100.0 * misroute_values /
+    strong_values.replace(0, np.nan)
+).round(2).values
+
+network_expert["CORROBORATION_SCORE_0_TO_100_RULE_BASED"] = (
+    pd.to_numeric(
+        ranked[score_col] if score_col else np.nan,
+        errors="coerce"
+    ).round(1).values
+)
+
+
+# ------------------------------------------------------------
+# 5. Full-feature Top 100
+# Move all rates/scores to the end
+# ------------------------------------------------------------
+
+metric_words = (
+    "RATE", "PCT", "SHARE", "SCORE", "DELTA",
+    "LIFT", "AGREEMENT"
+)
+
+metric_columns = [
+    c for c in ranked.columns
+    if c != "PRESENTATION_RANK"
+    and any(word in c for word in metric_words)
+]
+
+non_metric_columns = [
+    c for c in ranked.columns
+    if c not in metric_columns
+]
+
+top100_all_features = ranked[
+    non_metric_columns + metric_columns
+].copy()
+
+
+# ------------------------------------------------------------
+# 6. Feature guide for presentation
+# ------------------------------------------------------------
+
+guide_rows = []
+
+
+def add_guide(feature, source, meaning, sign, caution):
+    if feature and feature in network_expert.columns:
+        guide_rows.append({
+            "FEATURE": feature,
+            "SOURCE": source,
+            "WHAT_IT_MEANS": meaning,
+            "WHY_IT_IS_A_SIGN": sign,
+            "CAUTION": caution
+        })
+
+
+for feature, meaning in {
+    "FCC_PSAP_ID": "PSAP to which GMLC routed the call.",
+    "EXPECTED_FCC_PSAP_ID":
+        "PSAP whose boundary fully contains the call uncertainty area.",
+    "SETUP_ECGI_HEX": "Serving LTE cell/eCGI at call setup.",
+    "USID": "Routing/site identifier associated with the call.",
+    "ESRK": "Emergency Services Routing Key used for E911 routing.",
+    "MISROUTE_CALLS":
+        "Number of geometry-defined definite misroutes in the group.",
+    "MATCHED_CORRECT_CONTROL_CALLS":
+        "Number of similar definite-correct calls used as controls.",
+}.items():
+    add_guide(
+        feature,
+        "Geometry/GMLC",
+        meaning,
+        "Repeated concentration on the same PSAP, cell, USID or ESRK "
+        "supports a systematic pattern instead of random GPS variation.",
+        "Association; verify PSAP aliases and boundary/master versions."
+    )
+
+network_specs = [
+    (
+        route_status_case, "GMLC",
+        "Dominant GMLC route status among definite misroutes.",
+        "eCGI Match/ESRK Mismatch directly indicates that the serving "
+        "cell matched while ESRK-based routing disagreed.",
+        "Post-route evidence; strong corroboration, not causal proof."
+    ),
+    (
+        route_status_control, "GMLC",
+        "Dominant GMLC route status in matched correct controls.",
+        "Provides the normal routing outcome for comparison.",
+        "Control quality depends on the matching cohort."
+    ),
+    (
+        route_esinet_case, "GMLC",
+        "Dominant ESInet selected for the misroute group.",
+        "A different ESInet can isolate a routing-domain configuration.",
+        "ESInet values may overlap with region/market."
+    ),
+    (
+        route_esz_case, "GMLC",
+        "Dominant Emergency Service Zone used for routing.",
+        "A repeated ESZ with many wrong PSAP destinations supports an "
+        "ESZ-to-PSAP crosswalk issue.",
+        "Keep this identifier as text; Excel may display it scientifically."
+    ),
+    (
+        fallback_case, "GMLC",
+        "Whether fallback routing was used.",
+        "Fallback can bypass the normal routing mapping.",
+        "Fallback may be a consequence of an upstream failure."
+    ),
+    (
+        default_case, "GMLC",
+        "Whether the call used a default route.",
+        "Default routing can repeatedly send calls to an umbrella/default PSAP.",
+        "Verify the default PSAP and alias policy."
+    ),
+    (
+        sip_status_case, "GMLC/SIP",
+        "Dominant SIP status in the misroute group.",
+        "A status difference versus correct controls can identify a "
+        "specific signaling branch.",
+        "SIP status may occur after the routing decision."
+    ),
+    (
+        sip_method_case, "GMLC/SIP",
+        "Dominant SIP method, such as INVITE or BYE.",
+        "Shows which signaling phase is associated with the cohort.",
+        "A common method such as INVITE/BYE alone is not a cause."
+    ),
+    (
+        failure_case, "GMLC",
+        "Dominant short failure reason.",
+        "A repeated failure reason may explain use of fallback or default routing.",
+        "Missing/normal values provide little evidence."
+    ),
+    (
+        ims_pcscf_case, "IMS",
+        "Dominant IMS P-CSCF registration status.",
+        "Difference from controls may indicate a registration-path issue.",
+        "In the current results IMS evidence appears weaker than routing evidence."
+    ),
+    (
+        ims_reason_case, "IMS",
+        "Dominant IMS P-CSCF reason code.",
+        "A repeated abnormal reason code can isolate an IMS registration problem.",
+        "Compare with controls and require adequate IMS join coverage."
+    ),
+    (
+        raw_corr_case, "CCDR",
+        "CCDR correlation result for linked core-network records.",
+        "Poor correlation can indicate incomplete or inconsistent call records.",
+        "Missing correlation can result from join/data availability."
+    ),
+    (
+        raw_ecscf_case, "CCDR/E-CSCF",
+        "Dominant E-CSCF status from CCDR.",
+        "Difference from controls may identify a core E911 routing branch.",
+        "May be downstream of the original PSAP selection."
+    ),
+    (
+        raw_pcscf_case, "CCDR/P-CSCF",
+        "Dominant registered P-CSCF status in CCDR.",
+        "Repeated abnormal status may identify registration-path behavior.",
+        "Small differences should not override stronger GMLC evidence."
+    ),
+]
+
+for args in network_specs:
+    add_guide(*args)
+
+add_guide(
+    "NETWORK_EVIDENCE_SOURCE",
+    "Derived presentation field",
+    "Network subsystem supplying the clearest evidence.",
+    "Directs experts to GMLC, IMS or CCDR fields to review.",
+    "Rule-based explanation, not model feature importance."
+)
+
+add_guide(
+    "PRIMARY_NETWORK_SIGN",
+    "Derived presentation field",
+    "Most important observed network/signaling difference.",
+    "Summarizes the actual log/status value supporting investigation.",
+    "Association only."
+)
+
+add_guide(
+    "WHY_THIS_IS_A_SIGN",
+    "Derived presentation field",
+    "Plain-language interpretation of the observed feature.",
+    "Explains why network experts should investigate it.",
+    "Does not establish causality."
+)
+
+add_guide(
+    "MISROUTE_RATE_PCT_IN_THIS_COHORT",
+    "Calculated",
+    "100 × MISROUTE_CALLS ÷ TOTAL_STRONG_CALLS for this exact row/cohort.",
+    "Shows concentration of geometry-defined misroutes within the group.",
+    "Not confidence and not probability that an individual call is wrong."
+)
+
+add_guide(
+    "CORROBORATION_SCORE_0_TO_100_RULE_BASED",
+    "Calculated",
+    "Rule-based evidence score combining routing, fallback, SIP, IMS and CCDR differences.",
+    "Ranks cohorts with multiple supporting indicators.",
+    "80 means 80 rule points—not 80% certainty and not model feature importance."
+)
+
+feature_guide = pd.DataFrame(guide_rows)
+
+
+# ------------------------------------------------------------
+# 7. Save outputs
+# ------------------------------------------------------------
+
+all_file = export_dir / "misroute_top100_all_features.csv"
+expert_file = export_dir / "misroute_top100_network_expert.csv"
+guide_file = export_dir / "misroute_feature_guide.csv"
+excel_file = export_dir / "misroute_top100_network_expert_pack.xlsx"
+
+top100_all_features.to_csv(all_file, index=False)
+network_expert.to_csv(expert_file, index=False)
+feature_guide.to_csv(guide_file, index=False)
+
+read_me = pd.DataFrame({
+    "ITEM": [
+        "Purpose",
+        "Misroute definition",
+        "Misroute rate",
+        "Corroboration score",
+        "Important caution"
+    ],
+    "DESCRIPTION": [
+        "Top 100 geometry-defined misroute cohorts with network evidence.",
+        "The uncertainty area does not intersect the routed PSAP and is "
+        "fully covered by exactly one different PSAP.",
+        "MISROUTE_CALLS divided by TOTAL_STRONG_CALLS for that cohort.",
+        "Rule-based 0–100 evidence ranking; it is not probability.",
+        "Network fields corroborate or contextualize the geometry result; "
+        "they do not prove causality or redefine the label."
+    ]
+})
+
+try:
+    with pd.ExcelWriter(excel_file, engine="openpyxl") as writer:
+        read_me.to_excel(writer, sheet_name="Read_Me", index=False)
+        feature_guide.to_excel(writer, sheet_name="Feature_Guide", index=False)
+        network_expert.to_excel(
+            writer,
+            sheet_name="Top100_Network_View",
+            index=False
+        )
+        top100_all_features.to_excel(
+            writer,
+            sheet_name="Top100_All_Features",
+            index=False
+        )
+
+    excel_message = str(excel_file)
+
+except Exception as exc:
+    excel_message = f"Excel not created ({exc}); CSV files were created."
+
+
+# ------------------------------------------------------------
+# 8. Present results in notebook
+# ------------------------------------------------------------
+
+display(Markdown(
+    """
+## How to read this investigation table
+
+- **Misroute rate** = `MISROUTE_CALLS / TOTAL_STRONG_CALLS × 100`
+  for that exact PSAP/cell cohort.
+- **Corroboration score** is a rule-based 0–100 ranking.  
+  **80 does not mean 80% confidence.**
+- **MISROUTE_MODE** shows the dominant network value among definite misroutes.
+- **CONTROL_MODE** shows the dominant value among matched correct calls.
+- GMLC/IMS/CCDR fields provide supporting evidence; geometry still defines
+  the misroute.
+"""
+))
+
+display(Markdown("### Feature guide"))
+display(feature_guide)
+
+display(Markdown("### Top 100 — network expert presentation view"))
+with pd.option_context(
+    "display.max_rows", 100,
+    "display.max_columns", None,
+    "display.max_colwidth", 120
+):
+    display(network_expert)
+
+display(Markdown("### Top 100 — all available features"))
+with pd.option_context(
+    "display.max_rows", 100,
+    "display.max_columns", None,
+    "display.max_colwidth", 100
+):
+    display(top100_all_features)
+
+print("Source:", source_description)
+print("Saved:", all_file)
+print("Saved:", expert_file)
+print("Saved:", guide_file)
+print("Excel:", excel_message)
+
+
+
+
+
+
