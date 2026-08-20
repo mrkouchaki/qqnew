@@ -1,0 +1,223 @@
+The repeated expected PSAPs are the important pattern. Calls repeatedly resolve geographically to PSAPs 610, 5017, and 588, but their recorded routed PSAPs are thousands of kilometers away.
+
+However, this proves a conflict between the recorded location and routed PSAP. Before calling every record a confirmed operational misroute, verify that the coordinates, call joins, and PSAP-ID mapping are correct—especially because several calls reuse nearly identical coordinates.
+
+Below, I selected one representative visible row for each expected PSAP.
+
+1. Expected PSAP 610: Chico Police → routed to PSAP 5942 in Puerto Rico
+
+Geographic evidence
+
+* LATITUDE / LONGITUDE: approximately 39.796160, -121.851170
+    * Source: GMLC.
+    * Meaning: recorded resolved call location near Chico, California.
+    * Why important: this is the location used to determine the geographically responsible PSAP.
+    * CALL_COORDINATES_VALID = 1 only confirms valid latitude/longitude ranges. It does not prove that the coordinates are factually correct.
+* FCC_PSAP_ID = 5942
+    * Source: GMLC.
+    * Meaning: PSAP actually recorded as routed.
+    * Name: Puerto Rico 9-1-1 Service Governing Board.
+* EXPECTED_FCC_PSAP_ID = 610
+    * Source: computed by the notebook using the call uncertainty polygon and E911_PSAP_BOUNDARIES.
+    * Meaning: Chico Police Department is the single PSAP whose polygon fully contains the call’s uncertainty area.
+* Routed PSAP representative coordinates: approximately 18.199643, -66.385560
+    * Source: representative interior point calculated from PSAP 5942’s service polygon.
+    * Why important: confirms that PSAP 5942’s service area is in Puerto Rico.
+    * This is not the physical PSAP building location.
+* Expected PSAP representative coordinates: approximately 39.777499, -121.836
+    * Source: representative point of PSAP 610’s boundary.
+    * Why important: geographically agrees with the recorded call location.
+* DISTANCE_TO_ROUTED_BOUNDARY_M = 5,668,771 m
+    * Computed from the call location to the nearest boundary of PSAP 5942.
+    * About 5,669 km outside the routed PSAP.
+* UNCERT_METERS = 57 m
+    * Source: GMLC.
+    * Meaning: approximate radius of location uncertainty.
+* ROUTED_CLEARANCE_AFTER_UNCERTAINTY_M = 5,668,714 m
+    * Calculation: 5,668,771 − 57.
+    * Meaning: even the closest edge of the uncertainty area remains about 5,669 km from the routed PSAP.
+    * This eliminates location uncertainty as an explanation.
+* DISTANCE_TO_EXPECTED_BOUNDARY_M = 426.9 m
+    * Because the call is inside the expected polygon, this is clearance to its nearest edge—not distance to a PSAP center.
+* EXPECTED_MARGIN_AFTER_UNCERTAINTY_M = 369.9 m
+    * Calculation: 426.9 − 57.
+    * Meaning: the complete uncertainty circle remains approximately 370 m inside Chico’s PSAP boundary.
+    * This is the strongest geographic evidence in the row.
+
+Routing evidence
+
+* SETUP_ECGI_HEX = 310410DF993E6
+    * Source: GMLC.
+    * Meaning: cellular location/routing identifier associated with call setup.
+    * Why important: repeated calls near PSAP 610 with the same or related ECGIs can indicate a systematic ECGI-to-PSAP crosswalk problem rather than isolated GPS errors.
+* ROUTE_STATUS_GMLC = eCGI Missing
+    * Source: GMLC.
+    * Meaning: a usable eCGI routing match was unavailable in the GMLC routing path.
+    * Why important: without the normal cell-to-routing mapping, the system may depend on another key or fallback route. It supports a routing-input problem, although it does not identify Chico by itself.
+* ROUTE_FALLBACK = No ESRK available[7]
+    * Source: GMLC.
+    * Meaning: an ESRK-based fallback route was unavailable.
+    * Why important: both primary eCGI routing and ESRK fallback show weaknesses, increasing the possibility of an incorrect default, stale mapping, or alternate route selection.
+
+SIP/IMS/RAW evidence
+
+* SIP_STATUS = SENT[1], SIP_METHOD = INVITE[1], IMS_SIP_METHOD = BYE
+    * Sources: GMLC and IMS.
+    * Meaning: an INVITE was sent and a BYE was observed.
+    * Why important: this shows signaling activity occurred.
+    * It is not evidence of correct PSAP selection.
+* IMS registration contains 401 Unauthorized
+    * Source: E911_LTE_MASTER_IMS.
+    * Meaning: ordinary SIP authentication challenge.
+    * Why important: it should not be classified as a failure and does not strengthen the misroute conclusion.
+* RAW_ECSCF_STATUS contains an E-CSCF 404
+    * Source: RAW_CCDR.
+    * Meaning: a routing-related SIP request received a “not found” response.
+    * Why important: a 404 can indicate an unresolved routing URI, user, or domain. It supports a network-routing problem but does not independently prove which PSAP was responsible.
+
+Assessment
+
+This is an extremely strong geographic mismatch. The network evidence also shows missing eCGI routing, unavailable ESRK fallback, and an E-CSCF 404. The most likely investigation area is the cell/ESRK/routing crosswalk or the integrity of the call-location-to-call-ID join.
+
+⸻
+
+2. Expected PSAP 5017: Nye County → routed to PSAP 5165 in New York
+
+Representative visible row:
+
+* Routed: FCC 5165, Onondaga County area.
+* Expected: FCC 5017, Nye County Sheriff PSAP.
+* Call coordinates: approximately 36.138732, -115.920140.
+
+Geographic evidence
+
+* Call coordinates are in southern Nevada.
+    * Source: GMLC.
+    * They are geographically consistent with expected PSAP 5017.
+* Routed PSAP representative coordinates: approximately 43.021675, -76.202830
+    * Source: PSAP 5165 service polygon.
+    * Indicates the routed service area is in New York.
+* Expected PSAP representative coordinates: approximately 37.562080, -116.931
+    * Source: PSAP 5017 service polygon.
+    * Geographically consistent with Nevada.
+* DISTANCE_TO_ROUTED_BOUNDARY_M = 3,446,640 m
+    * Approximately 3,447 km outside the routed PSAP.
+* UNCERT_METERS = 57 m
+* ROUTED_CLEARANCE_AFTER_UNCERTAINTY_M = 3,446,583 m
+    * The uncertainty area cannot reasonably reach the routed New York PSAP.
+* DISTANCE_TO_EXPECTED_BOUNDARY_M = 433.1 m
+* EXPECTED_MARGIN_AFTER_UNCERTAINTY_M = 376.1 m
+    * The entire uncertainty circle remains approximately 376 m inside expected PSAP 5017.
+
+Routing evidence
+
+* ROUTE_STATUS_GMLC = eCGI Missing
+    * Source: GMLC.
+    * The primary cell-based routing context was unavailable.
+    * This matters because an absent cell mapping can force routing through a less reliable fallback or default path.
+* ROUTE_FALLBACK shows a WDLS response... problem
+    * Source: GMLC.
+    * Meaning: the Wireless Data Location System response path reported an error or unusable response.
+    * Why important: it supports a location-acquisition/routing-context problem that could explain why the geographically appropriate PSAP was not selected.
+* LBR_PSAP_DIFF_FLAG = 0
+    * Source: derived from GMLC LBR_PSAP_DIFF.
+    * Meaning: LBR does not provide an independent conflicting PSAP indication for this row.
+    * Therefore, this field does not strengthen the case.
+
+SIP/IMS/RAW evidence
+
+* SIP_STATUS = SENT[1], SIP_METHOD = INVITE[1], FAILURE_SHORT_DR = 0
+    * Source: GMLC.
+    * Normal-looking setup behavior; no short failure was recorded.
+* IMS method is BYE, with normal 401 registration challenge.
+    * Source: IMS.
+    * Does not explain or strengthen the PSAP mismatch.
+* RAW_CORRELATION_STATUS = 1 and RAW_ECSCF_STATUS ends in 0
+    * Source: RAW_CCDR.
+    * Correlation succeeded and no obvious E-CSCF error is shown.
+    * Therefore, IMS/RAW signaling is not the supporting evidence here.
+
+Assessment
+
+The evidence is primarily geographic, supported by eCGI Missing and the WDLS response problem. It points more toward missing or incorrect location-routing context than a general SIP failure.
+
+Because several calls resolve around the same expected PSAP 5017 while being assigned to different distant PSAPs, check whether the same ECGI, ESZ, or location-source combination is repeatedly producing incorrect mappings.
+
+⸻
+
+3. Expected PSAP 588: San Francisco → routed to PSAP 5235 in Ohio
+
+Representative visible row:
+
+* Routed: FCC 5235, Akron Combined Fire/Police area.
+* Expected: FCC 588, San Francisco PSAP.
+* Call coordinates: approximately 37.785169, -122.412870.
+
+Geographic evidence
+
+* Call location is in San Francisco.
+    * Source: GMLC.
+* Routed PSAP representative coordinates: approximately 41.084092, -81.508469
+    * Source: routed PSAP service polygon.
+    * Places the routed PSAP in Ohio.
+* Expected PSAP representative coordinates: approximately 37.729175, -123.047
+    * Source: expected PSAP service polygon.
+    * Consistent with the San Francisco region.
+* DISTANCE_TO_ROUTED_BOUNDARY_M = 3,498,009 m
+    * Approximately 3,498 km outside the routed PSAP.
+* UNCERT_METERS = 201 m
+* ROUTED_CLEARANCE_AFTER_UNCERTAINTY_M = 3,497,808 m
+    * The uncertainty area remains thousands of kilometers from the routed PSAP.
+* DISTANCE_TO_EXPECTED_BOUNDARY_M = 1,174.5 m
+* EXPECTED_MARGIN_AFTER_UNCERTAINTY_M = 973.5 m
+    * The complete uncertainty circle remains approximately 974 m inside expected PSAP 588.
+    * This is strong containment evidence.
+
+Routing evidence
+
+* USID = 1212 and ESRK = 3305111630
+    * Source: GMLC.
+    * These are trace identifiers, not failure indicators.
+    * Why we care: they allow this exact call to be traced across GMLC, IMS and RAW records and compared with other calls using the same routing keys.
+* ROUTE_STATUS_GMLC = eCGI Match/ESRK Match
+    * Source: GMLC.
+    * Meaning: GMLC considered the eCGI and ESRK internally consistent with its routing data.
+    * Why this is important: geometry still puts the call in San Francisco while the selected PSAP is in Ohio. That makes simple “missing input” less likely and raises suspicion of an incorrect or stale eCGI/ESRK-to-PSAP reference mapping.
+* ROUTE_FALLBACK = WDLS – location is suspicious
+    * Source: GMLC.
+    * Meaning: the WDLS path identified the location as suspicious or inconsistent.
+    * Why important: this independently shows that the routing system had concerns about location quality. It supports investigating which location source was selected and whether the correct location was used for routing.
+* LBR_SUCCESS = 0, LBR_PSAP_DIFF = 0
+    * Source: GMLC.
+    * LBR did not supply an independent alternative PSAP.
+    * These values do not strengthen the misroute; they indicate that LBR did not correct or contradict the route.
+
+SIP/IMS/RAW evidence
+
+* SIP_STATUS = SENT[1], SIP_METHOD = INVITE[1], FAILURE_SHORT_DR = 0
+    * Normal signaling context, not evidence of failure.
+* IMS shows BYE and an ordinary 401 challenge.
+    * Not abnormal and not evidence of misrouting.
+* RAW_CORRELATION_STATUS = 1, with no obvious RAW E-CSCF error.
+    * Call correlation succeeded.
+    * RAW signaling does not materially strengthen this row.
+
+Assessment
+
+This row is especially important because GMLC reports eCGI Match/ESRK Match, yet the geographic result is San Francisco versus Ohio. Combined with WDLS – location is suspicious, this is more consistent with:
+
+* Incorrect or stale eCGI/ESRK-to-PSAP crosswalk
+* Wrong location source selected for routing
+* Incorrect PSAP-ID reference mapping
+* Or a call-level join/location association error
+
+It is less consistent with a basic SIP signaling failure.
+
+Compact comparison
+
+Expected PSAP	Recorded routed PSAP	Routed separation	Expected containment	Most useful network evidence
+610 Chico	5942 Puerto Rico	~5,669 km	370 m after uncertainty	eCGI missing, ESRK unavailable, E-CSCF 404
+5017 Nye County	5165 Onondaga County	~3,447 km	376 m after uncertainty	eCGI missing, WDLS response problem
+588 San Francisco	5235 Akron/Ohio	~3,498 km	974 m after uncertainty	eCGI/ESRK report a match, but WDLS marks location suspicious
+
+The repeated expected PSAP regions are more informative than one isolated row. If many calls near the same expected PSAP have different, extremely distant routed PSAPs, the next priority should be validating the reused coordinates/call keys and grouping by EXPECTED_FCC_PSAP_ID + SETUP_ECGI_HEX + ROUTE_ESZ + ROUTE_ESINET. That will distinguish a systematic routing-crosswalk problem from a location or join-data defect.
