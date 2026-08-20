@@ -1,0 +1,45 @@
+
+
+
+
+from pathlib import Path
+import pandas as pd
+
+# Change only this value:
+MIN_DISTANCE_M = 1000       # Example: 1000, 15000, 30000
+
+OUTPUT_DIR = Path(globals().get(
+    "OUTPUT_DIR",
+    r"C:\temp\gmlc_v2\outputs_psap_rca_v4"
+))
+
+source_file = OUTPUT_DIR / "definite_misroutes_v4.csv"
+
+misroute_call_count = 0
+
+for chunk in pd.read_csv(
+    source_file,
+    usecols=["DISTANCE_TO_ROUTED_BOUNDARY_M"],
+    chunksize=250_000,
+    low_memory=False,
+):
+    distance = pd.to_numeric(
+        chunk["DISTANCE_TO_ROUTED_BOUNDARY_M"],
+        errors="coerce",
+    )
+
+    misroute_call_count += int(distance.ge(MIN_DISTANCE_M).sum())
+
+print(f"Minimum routed-PSAP distance: {MIN_DISTANCE_M:,.0f} m")
+print(f"Definite-misroute calls: {misroute_call_count:,}")
+
+
+
+
+
+
+
+
+
+
+
